@@ -7,7 +7,8 @@
  * - client_id: Graph API 客户端ID (如 9e5f94bc-xxx...)
  */
 
-import { chromium, Browser, Page } from 'playwright'
+import { randomInt } from 'node:crypto'
+import { chromium, Browser, Page, Locator } from 'playwright'
 
 // 日志回调类型
 type LogCallback = (message: string) => void
@@ -67,10 +68,226 @@ const LAST_NAMES = [
   'Taylor'
 ]
 
+const UPPERCASE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const LOWERCASE_CHARS = 'abcdefghijklmnopqrstuvwxyz'
+const DIGIT_CHARS = '0123456789'
+const PASSWORD_OPTIONAL_CHARS = UPPERCASE_CHARS + LOWERCASE_CHARS + DIGIT_CHARS
+
+function pickRandomChar(chars: string): string {
+  return chars[randomInt(chars.length)]
+}
+
+function shuffleChars(chars: string[]): string[] {
+  const shuffled = [...chars]
+
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1)
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+
+  return shuffled
+}
+
 function generateRandomName(): string {
   const first = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]
   const last = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]
   return `${first} ${last}`
+}
+
+function generateRandomPassword(length: number = 12): string {
+  if (length < 4) {
+    throw new Error('密码长度不能少于 4 位')
+  }
+
+  const passwordChars = [
+    pickRandomChar(UPPERCASE_CHARS),
+    pickRandomChar(LOWERCASE_CHARS),
+    pickRandomChar(DIGIT_CHARS),
+    '!'
+  ]
+
+  while (passwordChars.length < length) {
+    passwordChars.push(pickRandomChar(PASSWORD_OPTIONAL_CHARS))
+  }
+
+  return shuffleChars(passwordChars).join('')
+}
+
+type Point = { x: number; y: number }
+
+const mousePositions = new WeakMap<Page, Point>()
+
+function randomBetween(min: number, max: number): number {
+  if (max <= min) {
+    return min
+  }
+
+  return randomInt(min, max + 1)
+}
+
+function chance(percent: number): boolean {
+  return randomBetween(1, 100) <= percent
+}
+
+async function waitRandom(page: Page, min: number, max: number): Promise<void> {
+  await page.waitForTimeout(randomBetween(min, max))
+}
+
+function getViewportSize(page: Page): { width: number; height: number } {
+  return page.viewportSize() ?? { width: 1280, height: 900 }
+}
+
+function getCurrentMousePosition(page: Page): Point {
+  const existing = mousePositions.get(page)
+  if (existing) {
+    return existing
+  }
+
+  const viewport = getViewportSize(page)
+  return {
+    x: randomBetween(80, Math.max(81, viewport.width - 80)),
+    y: randomBetween(80, Math.max(81, viewport.height - 80))
+  }
+}
+
+function rememberMousePosition(page: Page, point: Point): void {
+  mousePositions.set(page, point)
+}
+
+function getRandomPointInViewport(page: Page): Point {
+  const viewport = getViewportSize(page)
+  return {
+    x: randomBetween(40, Math.max(41, viewport.width - 40)),
+    y: randomBetween(60, Math.max(61, viewport.height - 60))
+  }
+}
+
+function getRandomPointInBox(box: { x: number; y: number; width: number; height: number }): Point {
+  const paddingX = Math.min(Math.max(4, box.width * 0.2), 16)
+  const paddingY = Math.min(Math.max(4, box.height * 0.25), 12)
+
+  const minX = Math.round(box.x + Math.min(paddingX, Math.max(1, box.width / 2)))
+  const maxX = Math.round(box.x + Math.max(box.width - paddingX, 1))
+  const minY = Math.round(box.y + Math.min(paddingY, Math.max(1, box.height / 2)))
+  const maxY = Math.round(box.y + Math.max(box.height - paddingY, 1))
+
+  return {
+    x: randomBetween(minX, maxX),
+    y: randomBetween(minY, maxY)
+  }
+}
+
+async function moveMouseLikeUser(page: Page, target: Point): Promise<void> {
+  const start = getCurrentMousePosition(page)
+  const controlPoint = {
+    x: Math.round((start.x + target.x) / 2 + randomBetween(-70, 70)),
+    y: Math.round((start.y + target.y) / 2 + randomBetween(-55, 55))
+  }
+
+  await page.mouse.move(controlPoint.x, controlPoint.y, { steps: randomBetween(8, 16) })
+  rememberMousePosition(page, controlPoint)
+  await waitRandom(page, 30, 90)
+
+  await page.mouse.move(target.x, target.y, { steps: randomBetween(10, 22) })
+  rememberMousePosition(page, target)
+
+  if (chance(35)) {
+    const settlePoint = {
+      x: target.x + randomBetween(-3, 3),
+      y: target.y + randomBetween(-2, 2)
+    }
+    await page.mouse.move(settlePoint.x, settlePoint.y, { steps: randomBetween(2, 5) })
+    rememberMousePosition(page, settlePoint)
+  }
+}
+
+async function nudgeScrollLikeUser(page: Page, element?: Locator): Promise<void> {
+  if (!chance(65)) {
+    return
+  }
+
+  let delta = 0
+  const viewport = getViewportSize(page)
+
+  if (element) {
+    const box = await element.boundingBox().catch(() => null)
+    if (box) {
+      const marginTop = box.y
+      const marginBottom = viewport.height - (box.y + box.height)
+
+      if (marginTop > 220 && marginBottom > 220) {
+        delta = chance(50) ? randomBetween(40, 120) : -randomBetween(40, 120)
+      } else if (marginTop > 220) {
+        delta = randomBetween(40, 120)
+      } else if (marginBottom > 220) {
+        delta = -randomBetween(40, 120)
+      }
+    }
+  }
+
+  if (!delta) {
+    delta = chance(50) ? randomBetween(20, 70) : -randomBetween(20, 70)
+  }
+
+  await page.mouse.wheel(0, delta)
+  await waitRandom(page, 120, 260)
+
+  if (Math.abs(delta) > 45 && chance(70)) {
+    const correction = delta > 0 ? -randomBetween(15, 45) : randomBetween(15, 45)
+    await page.mouse.wheel(0, correction)
+    await waitRandom(page, 80, 180)
+  }
+}
+
+async function focusElementLikeUser(page: Page, element: Locator): Promise<void> {
+  await element.scrollIntoViewIfNeeded().catch(() => {})
+  await waitRandom(page, 150, 320)
+  await nudgeScrollLikeUser(page, element)
+
+  const box = await element.boundingBox()
+  if (box) {
+    await moveMouseLikeUser(page, getRandomPointInBox(box))
+    await waitRandom(page, 80, 200)
+    await page.mouse.down()
+    await waitRandom(page, 45, 110)
+    await page.mouse.up()
+    await waitRandom(page, 80, 180)
+    return
+  }
+
+  await element.click({ delay: randomBetween(50, 120) })
+  await waitRandom(page, 80, 180)
+}
+
+async function typeTextLikeUser(page: Page, value: string): Promise<void> {
+  for (let i = 0; i < value.length; i++) {
+    await page.keyboard.type(value[i], { delay: randomBetween(45, 120) })
+
+    if ((i + 1) % randomBetween(3, 5) === 0 && i < value.length - 1) {
+      await waitRandom(page, 120, 260)
+    }
+  }
+}
+
+async function settleAfterInput(page: Page, element: Locator): Promise<void> {
+  await waitRandom(page, 180, 360)
+  await nudgeScrollLikeUser(page, element)
+
+  if (chance(55)) {
+    await moveMouseLikeUser(page, getRandomPointInViewport(page))
+    await waitRandom(page, 80, 180)
+  }
+
+  await element.blur().catch(() => {})
+  await waitRandom(page, 80, 180)
+}
+
+async function warmUpPageInteraction(page: Page): Promise<void> {
+  await waitRandom(page, 400, 900)
+  await moveMouseLikeUser(page, getRandomPointInViewport(page))
+  await waitRandom(page, 120, 240)
+  await nudgeScrollLikeUser(page)
+  await waitRandom(page, 200, 400)
 }
 
 // HTML 转文本 - 改进版本
@@ -169,14 +386,28 @@ export async function getOutlookVerificationCode(
       const tokenAttempts = [
         {
           url: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
-          scope: 'https://graph.microsoft.com/Mail.Read'
+          scope: 'https://graph.microsoft.com/.default offline_access'
         },
         {
           url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-          scope: 'https://graph.microsoft.com/Mail.Read'
+          scope: 'https://graph.microsoft.com/.default offline_access'
         },
-        { url: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token', scope: null },
-        { url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token', scope: null }
+        {
+          url: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
+          scope: 'https://graph.microsoft.com/Mail.Read offline_access'
+        },
+        {
+          url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+          scope: 'https://graph.microsoft.com/Mail.Read offline_access'
+        },
+        {
+          url: 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
+          scope: null
+        },
+        {
+          url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+          scope: null
+        }
       ]
 
       for (const attempt of tokenAttempts) {
@@ -194,15 +425,28 @@ export async function getOutlookVerificationCode(
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: tokenBody.toString()
           })
+          const responseText = await tokenResponse.text()
 
           if (tokenResponse.ok) {
-            const tokenResult = (await tokenResponse.json()) as { access_token: string }
-            accessToken = tokenResult.access_token
+            let tokenResult: { access_token?: string } | null = null
+            try {
+              tokenResult = JSON.parse(responseText) as { access_token?: string }
+            } catch {
+              log(`token 响应不是合法 JSON，已忽略: ${responseText.substring(0, 120)}`)
+              continue
+            }
+
+            const candidateToken = tokenResult.access_token?.trim() || ''
+            if (!candidateToken) {
+              log('token 响应缺少 access_token，已忽略')
+              continue
+            }
+
+            accessToken = candidateToken
             log('✓ 成功获取 access_token')
             break
           } else {
-            const errorText = await tokenResponse.text()
-            log(`token 刷新失败(${tokenResponse.status}): ${errorText.substring(0, 200)}`)
+            log(`token 刷新失败(${tokenResponse.status}): ${responseText.substring(0, 200)}`)
           }
         } catch {
           continue
@@ -311,9 +555,22 @@ async function waitAndFill(
   try {
     const element = page.locator(selector).first()
     await element.waitFor({ state: 'visible', timeout })
-    await page.waitForTimeout(500)
-    await element.clear()
-    await element.fill(value)
+    await waitForElementEnabled(element, Math.min(timeout, 10000))
+    await focusElementLikeUser(page, element)
+
+    const selectAllShortcut = process.platform === 'darwin' ? 'Meta+A' : 'Control+A'
+    await page.keyboard.press(selectAllShortcut).catch(() => {})
+    await waitRandom(page, 50, 120)
+    await page.keyboard.press('Backspace').catch(() => {})
+    await waitRandom(page, 80, 180)
+    await typeTextLikeUser(page, value)
+
+    const currentValue = await element.inputValue().catch(() => '')
+    if (currentValue !== value) {
+      await element.fill(value)
+    }
+
+    await settleAfterInput(page, element)
     log(`✓ 已输入${description}: ${value}`)
     return true
   } catch (error) {
@@ -345,6 +602,96 @@ async function waitForManualVerification(
   }
 }
 
+async function waitForElementEnabled(element: Locator, timeout: number = 10000): Promise<boolean> {
+  const startTime = Date.now()
+
+  while (Date.now() - startTime < timeout) {
+    try {
+      const isVisible = await element.isVisible()
+      const isEnabled = await element.isEnabled()
+      const ariaDisabled = await element.getAttribute('aria-disabled')
+
+      if (isVisible && isEnabled && ariaDisabled !== 'true') {
+        return true
+      }
+    } catch {}
+
+    await new Promise((r) => setTimeout(r, 250))
+  }
+
+  return false
+}
+
+async function clickLikeUser(
+  page: Page,
+  element: Locator,
+  log: LogCallback,
+  description: string
+): Promise<void> {
+  await element.scrollIntoViewIfNeeded().catch(() => {})
+  await waitRandom(page, 180, 360)
+  await nudgeScrollLikeUser(page, element)
+
+  const box = await element.boundingBox()
+  if (box) {
+    await moveMouseLikeUser(page, getRandomPointInBox(box))
+    await waitRandom(page, 90, 220)
+    await page.mouse.down()
+    await waitRandom(page, 55, 140)
+    await page.mouse.up()
+    await waitRandom(page, 120, 260)
+    log(`✓ 已用鼠标点击${description}`)
+    return
+  }
+
+  await element.click({ delay: randomBetween(60, 140) })
+  await waitRandom(page, 120, 260)
+  log(`✓ 已点击${description}`)
+}
+
+async function waitForAnyVisibleSelector(
+  page: Page,
+  selectors: string[],
+  timeout: number = 30000
+): Promise<string | null> {
+  const startTime = Date.now()
+
+  while (Date.now() - startTime < timeout) {
+    for (const selector of selectors) {
+      try {
+        if (await page.locator(selector).first().isVisible()) {
+          return selector
+        }
+      } catch {}
+    }
+
+    await page.waitForTimeout(500)
+  }
+
+  return null
+}
+
+async function waitForManualClickAndAdvance(
+  page: Page,
+  nextStepSelectors: string[],
+  log: LogCallback,
+  description: string,
+  timeout: number = 180000
+): Promise<boolean> {
+  log(
+    `自动点击${description}后页面未进入下一步，请在浏览器窗口中手动点击，最长等待 ${Math.floor(timeout / 1000)} 秒...`
+  )
+
+  const matchedSelector = await waitForAnyVisibleSelector(page, nextStepSelectors, timeout)
+  if (matchedSelector) {
+    log(`✓ 检测到你已手动完成${description}`)
+    return true
+  }
+
+  log(`✗ 等待手动完成${description}超时`)
+  return false
+}
+
 /**
  * 尝试多个选择器点击
  */
@@ -360,8 +707,8 @@ async function tryClickSelectors(
       const element = page.locator(selector).first()
       await element.waitFor({ state: 'visible', timeout: timeout / selectors.length })
       await page.waitForTimeout(300)
-      await element.click()
-      log(`✓ 已点击${description}`)
+      await waitForElementEnabled(element, 5000)
+      await clickLikeUser(page, element, log, description)
       return true
     } catch {
       continue
@@ -435,8 +782,8 @@ async function checkAndRetryOnError(
       try {
         const button = page.locator(buttonSelector).first()
         await button.waitFor({ state: 'visible', timeout: 5000 })
-        await button.click()
-        log(`✓ 已重新点击${description}`)
+        await waitForElementEnabled(button, 5000)
+        await clickLikeUser(page, button, log, description)
       } catch (e) {
         log(`✗ 重新点击${description}失败: ${e}`)
       }
@@ -462,9 +809,8 @@ async function waitAndClickWithRetry(
   try {
     const element = page.locator(selector).first()
     await element.waitFor({ state: 'visible', timeout })
-    await page.waitForTimeout(500)
-    await element.click()
-    log(`✓ 已点击${description}`)
+    await waitForElementEnabled(element, Math.min(timeout, 10000))
+    await clickLikeUser(page, element, log, description)
 
     // 检查是否有错误弹窗，如果有则重试
     const success = await checkAndRetryOnError(page, selector, log, description, maxRetries)
@@ -482,7 +828,8 @@ async function waitAndClickWithRetry(
 export async function activateOutlook(
   email: string,
   emailPassword: string,
-  log: LogCallback
+  log: LogCallback,
+  headless: boolean = false
 ): Promise<{ success: boolean; error?: string }> {
   const activationUrl = 'https://go.microsoft.com/fwlink/p/?linkid=2125442'
   let browser: Browser | null = null
@@ -494,7 +841,7 @@ export async function activateOutlook(
     // 启动浏览器
     log('\n步骤1: 启动浏览器，访问 Outlook 激活页面...')
     browser = await chromium.launch({
-      headless: false,
+      headless,
       args: ['--disable-blink-features=AutomationControlled']
     })
 
@@ -509,6 +856,7 @@ export async function activateOutlook(
     await page.goto(activationUrl, { waitUntil: 'networkidle', timeout: 60000 })
     log('✓ 页面加载完成')
     await page.waitForTimeout(2000)
+    await warmUpPageInteraction(page)
 
     // 步骤2: 等待邮箱输入框出现并输入邮箱
     log('\n步骤2: 输入邮箱...')
@@ -722,6 +1070,7 @@ export async function activateOutlook(
  * @param skipOutlookActivation 是否跳过 Outlook 激活
  * @param proxyUrl 代理地址（仅用于 AWS 注册，不用于 Outlook 激活和获取验证码）
  * @param manualVerification 是否手动输入验证码
+ * @param headless 是否无头模式（手动验证码模式下会强制关闭）
  */
 export async function autoRegisterAWS(
   email: string,
@@ -731,16 +1080,22 @@ export async function autoRegisterAWS(
   emailPassword?: string,
   skipOutlookActivation: boolean = false,
   proxyUrl?: string,
-  manualVerification: boolean = false
+  manualVerification: boolean = false,
+  headless: boolean = false
 ): Promise<{ success: boolean; ssoToken?: string; name?: string; error?: string }> {
-  const password = 'admin123456aA!'
+  const password = generateRandomPassword(12)
   const randomName = generateRandomName()
   let browser: Browser | null = null
+  const useHeadless = manualVerification ? false : headless
+
+  if (manualVerification && headless) {
+    log('⚠ 手动验证码模式不支持无头，已自动切换为有头模式')
+  }
 
   // 如果是 Outlook 邮箱且提供了密码，先激活（不使用代理）
   if (!skipOutlookActivation && email.toLowerCase().includes('outlook') && emailPassword) {
     log('检测到 Outlook 邮箱，先进行激活（不使用代理）...')
-    const activationResult = await activateOutlook(email, emailPassword, log)
+    const activationResult = await activateOutlook(email, emailPassword, log, useHeadless)
     if (!activationResult.success) {
       log(`⚠ Outlook 激活可能未完成: ${activationResult.error}`)
       log('继续尝试 AWS 注册...')
@@ -758,12 +1113,13 @@ export async function autoRegisterAWS(
   if (proxyUrl) {
     log(`代理: ${proxyUrl}`)
   }
+  log(`浏览器模式: ${useHeadless ? '无头' : '有头'}`)
 
   try {
     // 步骤1: 创建浏览器，进入注册页面（使用代理）
     log('\n步骤1: 启动浏览器，进入注册页面...')
     browser = await chromium.launch({
-      headless: false,
+      headless: useHeadless,
       proxy: proxyUrl ? { server: proxyUrl } : undefined,
       args: ['--disable-blink-features=AutomationControlled']
     })
@@ -780,6 +1136,7 @@ export async function autoRegisterAWS(
     await page.goto(registerUrl, { waitUntil: 'networkidle', timeout: 60000 })
     log('✓ 页面加载完成')
     await page.waitForTimeout(2000)
+    await warmUpPageInteraction(page)
 
     // 等待邮箱输入框出现并输入邮箱
     // 选择器: input[placeholder="username@example.com"]
@@ -860,6 +1217,49 @@ export async function autoRegisterAWS(
         } catch {
           isLoginFlow = false
         }
+      }
+    }
+
+    const progressedSelector = await waitForAnyVisibleSelector(
+      page,
+      [loginHeadingSelector, verifyHeadingSelector, verifyCodeInputSelector, nameInputSelector],
+      2000
+    )
+
+    if (!progressedSelector) {
+      if (
+        !(await waitForManualClickAndAdvance(
+          page,
+          [loginHeadingSelector, verifyHeadingSelector, verifyCodeInputSelector, nameInputSelector],
+          log,
+          '第一个继续按钮'
+        ))
+      ) {
+        throw new Error('点击第一个继续按钮后页面未进入下一步')
+      }
+
+      const hasVerify = await page
+        .locator(verifyHeadingSelector)
+        .first()
+        .isVisible()
+        .catch(() => false)
+      const hasVerifyInput = await page
+        .locator(verifyCodeInputSelector)
+        .first()
+        .isVisible()
+        .catch(() => false)
+      const hasLogin = await page
+        .locator(loginHeadingSelector)
+        .first()
+        .isVisible()
+        .catch(() => false)
+
+      if (hasVerify || hasVerifyInput) {
+        isLoginFlow = true
+        isVerifyFlow = true
+      } else if (hasLogin) {
+        isLoginFlow = true
+        isVerifyFlow = false
       }
     }
 
@@ -954,7 +1354,7 @@ export async function autoRegisterAWS(
       // ========== 注册流程（新账号）==========
       // 步骤2: 等待姓名输入框出现，输入姓名
       log('\n步骤2: 输入姓名...')
-      if (!(await waitAndFill(page, nameInputSelector, randomName, log, '姓名输入框'))) {
+      if (!(await waitAndFill(page, nameInputSelector, randomName, log, '姓名输入框', 120000))) {
         throw new Error('未找到姓名输入框')
       }
 
@@ -1051,8 +1451,9 @@ export async function autoRegisterAWS(
     // 步骤5: 获取 SSO Token（登录和注册流程共用）
     log('\n步骤5: 获取 SSO Token...')
     let ssoToken: string | null = null
+    const ssoTokenWaitSeconds = 120
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < ssoTokenWaitSeconds; i++) {
       const cookies = await context.cookies()
       const ssoCookie = cookies.find((c) => c.name === 'x-amz-sso_authn')
       if (ssoCookie) {
@@ -1060,7 +1461,7 @@ export async function autoRegisterAWS(
         log(`✓ 成功获取 SSO Token (x-amz-sso_authn)!`)
         break
       }
-      log(`等待 SSO Token... (${i + 1}/30)`)
+      log(`等待 SSO Token... (${i + 1}/${ssoTokenWaitSeconds})`)
       await page.waitForTimeout(1000)
     }
 

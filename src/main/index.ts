@@ -1130,6 +1130,28 @@ app.whenReady().then(() => {
     }
   })
 
+  // IPC: 加载自动注册数据
+  ipcMain.handle('load-auto-register', async () => {
+    try {
+      await initStore()
+      return store!.get('autoRegisterData', null)
+    } catch (error) {
+      console.error('Failed to load auto register data:', error)
+      return null
+    }
+  })
+
+  // IPC: 保存自动注册数据
+  ipcMain.handle('save-auto-register', async (_event, data) => {
+    try {
+      await initStore()
+      store!.set('autoRegisterData', data)
+    } catch (error) {
+      console.error('Failed to save auto register data:', error)
+      throw error
+    }
+  })
+
   // IPC: 刷新账号 Token（支持 IdC 和社交登录）
   ipcMain.handle('refresh-account-token', async (_event, account) => {
     try {
@@ -3862,6 +3884,7 @@ app.whenReady().then(() => {
     skipOutlookActivation?: boolean
     proxyUrl?: string
     manualVerification?: boolean
+    headless?: boolean
   }) => {
     console.log('[AutoRegister] Starting registration for:', params.email)
     if (params.proxyUrl) {
@@ -3886,7 +3909,8 @@ app.whenReady().then(() => {
         params.emailPassword,
         params.skipOutlookActivation || false,
         params.proxyUrl,
-        params.manualVerification || false
+        params.manualVerification || false,
+        params.headless || false
       )
       
       return result
@@ -3900,6 +3924,7 @@ app.whenReady().then(() => {
   ipcMain.handle('activate-outlook', async (_event, params: {
     email: string
     emailPassword: string
+    headless?: boolean
   }) => {
     console.log('[ActivateOutlook] Starting activation for:', params.email)
     
@@ -3916,7 +3941,8 @@ app.whenReady().then(() => {
       const result = await activateOutlook(
         params.email,
         params.emailPassword,
-        sendLog
+        sendLog,
+        params.headless || false
       )
       
       return result

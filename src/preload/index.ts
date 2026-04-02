@@ -56,6 +56,16 @@ const api = {
     return ipcRenderer.invoke('save-accounts', data)
   },
 
+  // 自动注册 - 加载数据
+  loadAutoRegister: (): Promise<unknown> => {
+    return ipcRenderer.invoke('load-auto-register')
+  },
+
+  // 自动注册 - 保存数据
+  saveAutoRegister: (data: unknown): Promise<void> => {
+    return ipcRenderer.invoke('save-auto-register', data)
+  },
+
   // 账号管理 - 刷新 Token
   refreshAccountToken: (account: unknown): Promise<unknown> => {
     return ipcRenderer.invoke('refresh-account-token', account)
@@ -555,6 +565,7 @@ const api = {
     skipOutlookActivation?: boolean
     proxyUrl?: string
     manualVerification?: boolean
+    headless?: boolean
   }): Promise<{
     success: boolean
     ssoToken?: string
@@ -568,6 +579,7 @@ const api = {
   activateOutlook: (params: {
     email: string
     emailPassword: string
+    headless?: boolean
   }): Promise<{
     success: boolean
     error?: string

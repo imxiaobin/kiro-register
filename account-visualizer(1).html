@@ -645,7 +645,6 @@
               </div>
               <div class="button-row" style="margin-top: 0">
                 <button id="exportFormattedBtn" class="secondary">导出指定格式</button>
-                <button id="copyFormattedBtn" class="secondary">复制固定格式</button>
                 <button id="exportJsonBtn" class="secondary">导出 JSON</button>
                 <button id="exportCsvBtn" class="secondary">导出 CSV</button>
               </div>
@@ -693,7 +692,6 @@
         tableArea: document.getElementById("tableArea"),
         resultCaption: document.getElementById("resultCaption"),
         exportFormattedBtn: document.getElementById("exportFormattedBtn"),
-        copyFormattedBtn: document.getElementById("copyFormattedBtn"),
         exportJsonBtn: document.getElementById("exportJsonBtn"),
         exportCsvBtn: document.getElementById("exportCsvBtn"),
         toast: document.getElementById("toast")
@@ -1052,10 +1050,6 @@
         return `${record.email}|${record.password}|${record.token}|${record.machineId}`;
       }
 
-      function getFormattedExportContent() {
-        return state.filteredRecords.map(formatRecordForExport).join("\n");
-      }
-
       function getSingleExportFilename(record) {
         const baseName = (record.email || record.id || "record")
           .replaceAll(/[^a-zA-Z0-9._-]+/g, "_")
@@ -1064,12 +1058,10 @@
       }
 
       function exportFormatted() {
-        downloadFile("accounts-formatted.txt", getFormattedExportContent(), "text/plain;charset=utf-8");
-        showToast("已导出指定格式");
-      }
+        const content = state.filteredRecords.map(formatRecordForExport).join("\n");
 
-      function copyFormatted() {
-        copyText(getFormattedExportContent(), "已复制固定格式");
+        downloadFile("accounts-formatted.txt", content, "text/plain;charset=utf-8");
+        showToast("已导出指定格式");
       }
 
       function exportSingleFormatted(recordId) {
@@ -1173,7 +1165,6 @@
         saveCachedSource(refs.rawInput.value);
       });
       refs.exportFormattedBtn.addEventListener("click", exportFormatted);
-      refs.copyFormattedBtn.addEventListener("click", copyFormatted);
       refs.exportJsonBtn.addEventListener("click", exportJson);
       refs.exportCsvBtn.addEventListener("click", exportCsv);
 

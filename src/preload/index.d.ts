@@ -130,6 +130,10 @@ interface KiroApi {
   // 账号管理
   loadAccounts: () => Promise<AccountData | null>
   saveAccounts: (data: AccountData) => Promise<void>
+
+  // 自动注册数据持久化
+  loadAutoRegister: () => Promise<unknown>
+  saveAutoRegister: (data: unknown) => Promise<void>
   refreshAccountToken: (account: unknown) => Promise<RefreshResult>
   checkAccountStatus: (account: unknown) => Promise<StatusResult>
   
@@ -511,6 +515,7 @@ interface KiroApi {
     skipOutlookActivation?: boolean
     proxyUrl?: string
     manualVerification?: boolean
+    headless?: boolean
   }) => Promise<{
     success: boolean
     ssoToken?: string
@@ -522,6 +527,7 @@ interface KiroApi {
   activateOutlook: (params: {
     email: string
     emailPassword: string
+    headless?: boolean
   }) => Promise<{
     success: boolean
     error?: string

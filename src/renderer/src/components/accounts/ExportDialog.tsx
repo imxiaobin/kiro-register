@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import { useAccountsStore } from '@/store/accounts'
 import type { Account } from '@/types/account'
 
-type ExportFormat = 'json' | 'json-single' | 'txt' | 'csv' | 'clipboard'
+type ExportFormat = 'json' | 'json-single' | 'txt' | 'csv' | 'clipboard' | 'clipboard-full'
 
 interface ExportDialogProps {
   open: boolean
@@ -29,6 +29,7 @@ export function ExportDialog({ open, onClose, accounts, selectedCount }: ExportD
     { id: 'txt', name: 'TXT', icon: FileText, desc: includeCredentials ? '可导入格式：邮箱,Token,昵称,登录方式' : '纯文本格式，每行一个账号' },
     { id: 'csv', name: 'CSV', icon: Table, desc: includeCredentials ? '可导入格式，Excel 兼容' : 'Excel 兼容格式' },
     { id: 'clipboard', name: '剪贴板', icon: Clipboard, desc: includeCredentials ? '可导入格式：邮箱,Token' : '复制到剪贴板' },
+    { id: 'clipboard-full', name: '复制完整数据', icon: Clipboard, desc: '复制完整 JSON 数据到剪贴板' },
   ]
 
   // 生成单个账号的完整 JSON 数据
@@ -136,6 +137,21 @@ export function ExportDialog({ open, onClose, accounts, selectedCount }: ExportD
           `${acc.email}${acc.nickname ? ` (${acc.nickname})` : ''} - ${acc.subscription?.title || '未知订阅'}`
         ).join('\n')
 
+      case 'clipboard-full':
+        const fullData = exportAccounts(accounts.map(a => a.id))
+        if (!includeCredentials) {
+          fullData.accounts = fullData.accounts.map(acc => ({
+            ...acc,
+            credentials: {
+              ...acc.credentials,
+              accessToken: '',
+              refreshToken: '',
+              csrfToken: ''
+            }
+          }))
+        }
+        return JSON.stringify(fullData, null, 2)
+
       default:
         return ''
     }
@@ -164,7 +180,7 @@ export function ExportDialog({ open, onClose, accounts, selectedCount }: ExportD
 
     const content = generateContent(selectedFormat)
 
-    if (selectedFormat === 'clipboard') {
+    if (selectedFormat === 'clipboard' || selectedFormat === 'clipboard-full') {
       await navigator.clipboard.writeText(content)
       setCopied(true)
       setTimeout(() => {
@@ -247,7 +263,7 @@ export function ExportDialog({ open, onClose, accounts, selectedCount }: ExportD
           </div>
 
           {/* 选项 */}
-          {(selectedFormat === 'json' || selectedFormat === 'json-single') && (
+          {(selectedFormat === 'json' || selectedFormat === 'json-single' || selectedFormat === 'clipboard-full') && (
             <label className="flex items-center gap-2 p-3 bg-muted rounded-lg cursor-pointer">
               <input
                 type="checkbox"
@@ -274,7 +290,7 @@ export function ExportDialog({ open, onClose, accounts, selectedCount }: ExportD
                 <Check className="h-4 w-4 mr-2" />
                 已复制
               </>
-            ) : selectedFormat === 'clipboard' ? (
+            ) : (selectedFormat === 'clipboard' || selectedFormat === 'clipboard-full') ? (
               <>
                 <Clipboard className="h-4 w-4 mr-2" />
                 复制到剪贴板

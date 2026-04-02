@@ -28,7 +28,7 @@ export function AutoRegisterPage() {
   const [inputText, setInputText] = useState('')
   const [proxyTestStatus, setProxyTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [proxyTestMessage, setProxyTestMessage] = useState('')
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const logsContainerRef = useRef<HTMLDivElement>(null)
   
   // 使用全局 store
   const {
@@ -38,7 +38,9 @@ export function AutoRegisterPage() {
     concurrency,
     skipOutlookActivation,
     manualVerification,
+    headlessMode,
     addAccounts,
+    removeAccount,
     clearAccounts,
     updateAccountStatus,
     addLog,
@@ -47,9 +49,11 @@ export function AutoRegisterPage() {
     setConcurrency,
     setSkipOutlookActivation,
     setManualVerification,
+    setHeadlessMode,
     requestStop,
     resetStop,
-    getStats
+    getStats,
+    loadFromStorage
   } = useAutoRegisterStore()
   
   const { addAccount, saveToStorage, proxyUrl, proxyProtocol, setProxy, accounts: existingAccounts } = useAccountsStore()
@@ -62,6 +66,11 @@ export function AutoRegisterPage() {
     )
   }, [existingAccounts])
 
+  // 挂载时从文件加载持久化数据
+  useEffect(() => {
+    loadFromStorage()
+  }, [loadFromStorage])
+
   // 监听来自主进程的实时日志
   useEffect(() => {
     const unsubscribe = window.api.onAutoRegisterLog((data) => {
@@ -72,8 +81,19 @@ export function AutoRegisterPage() {
 
   // 自动滚动到日志底部
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = logsContainerRef.current
+    if (!container) return
+    container.scrollTop = container.scrollHeight
   }, [logs])
+
+  const isLikelyClientId = (value: string): boolean => {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())
+  }
+
+  const isLikelyRefreshToken = (value: string): boolean => {
+    const token = value.trim()
+    return token.startsWith('M.') || token.startsWith('Atza|') || token.length > 80
+  }
 
   const parseAccounts = (text: string): RegisterAccount[] => {
     const lines = text.trim().split('\n')
@@ -83,17 +103,61 @@ export function AutoRegisterPage() {
       const trimmed = line.trim()
       if (!trimmed || trimmed.startsWith('#')) continue
       
-      const parts = trimmed.split('|')
+      const delimiter = trimmed.includes('----') ? '----' : '|'
+      const parts = trimmed.split(delimiter).map(part => part.trim())
       if (parts.length >= 1 && parts[0].includes('@')) {
         const email = parts[0].trim()
+        const password = parts[1] || ''
+        let refreshToken = ''
+        let clientId = ''
+
+        if (parts[2]) {
+          const third = parts[2]
+          if (delimiter === '----') {
+            clientId = third
+          } else {
+            refreshToken = third
+          }
+        }
+
+        if (parts[3]) {
+          const third = parts[2] || ''
+          const fourth = parts[3]
+
+          const thirdLooksClientId = isLikelyClientId(third)
+          const fourthLooksClientId = isLikelyClientId(fourth)
+          const thirdLooksRefreshToken = isLikelyRefreshToken(third)
+          const fourthLooksRefreshToken = isLikelyRefreshToken(fourth)
+
+          // 兼容两种顺序：
+          // 1) 邮箱|密码|refresh_token|client_id
+          // 2) 邮箱----密码----client_id----refresh_token
+          if ((thirdLooksClientId && fourthLooksRefreshToken) || (delimiter === '----' && !thirdLooksRefreshToken)) {
+            clientId = third
+            refreshToken = fourth
+          } else if ((thirdLooksRefreshToken && fourthLooksClientId) || delimiter === '|') {
+            refreshToken = third
+            clientId = fourth
+          } else {
+            // 无法判断时按分隔符默认顺序
+            if (delimiter === '----') {
+              clientId = third
+              refreshToken = fourth
+            } else {
+              refreshToken = third
+              clientId = fourth
+            }
+          }
+        }
+
         // 检查是否已存在
         const exists = isEmailExists(email)
         parsed.push({
           id: uuidv4(),
           email,
-          password: parts[1]?.trim() || '',
-          refreshToken: parts[2]?.trim() || '',
-          clientId: parts[3]?.trim() || '',
+          password,
+          refreshToken,
+          clientId,
           status: exists ? 'exists' : 'pending'
         })
       }
@@ -252,6 +316,11 @@ export function AutoRegisterPage() {
     try {
       updateAccountStatus(account.id, { status: 'registering' })
       addLog(`[${account.email}] 开始注册...`)
+      const {
+        skipOutlookActivation: runtimeSkipOutlookActivation,
+        manualVerification: runtimeManualVerification,
+        headlessMode: runtimeHeadlessMode
+      } = useAutoRegisterStore.getState()
       
       // 调用主进程的自动注册功能
       const result = await window.api.autoRegisterAWS({
@@ -259,9 +328,10 @@ export function AutoRegisterPage() {
         emailPassword: account.password,
         refreshToken: account.refreshToken,
         clientId: account.clientId,
-        skipOutlookActivation: useAutoRegisterStore.getState().skipOutlookActivation,
+        skipOutlookActivation: runtimeSkipOutlookActivation,
         proxyUrl: proxyUrl ? normalizeProxyInput(proxyUrl, proxyProtocol) : undefined,
-        manualVerification: useAutoRegisterStore.getState().manualVerification
+        manualVerification: runtimeManualVerification,
+        headless: runtimeHeadlessMode && !runtimeManualVerification
       })
       
       if (result.success && result.ssoToken) {
@@ -305,6 +375,7 @@ export function AutoRegisterPage() {
     resetStop()
     addLog(`========== 开始批量注册 (并发数: ${concurrency}) ==========`)
     addLog(`待注册: ${pendingAccounts.length} 个，已跳过: ${accounts.length - pendingAccounts.length} 个`)
+    addLog(`浏览器模式: ${manualVerification ? '有头（手动验证码）' : (headlessMode ? '无头' : '有头')}`)
     if (manualVerification) {
       addLog('当前为手动验证码模式，请在浏览器窗口中自行输入验证码并点击 Continue')
       if (concurrency > 1) {
@@ -387,7 +458,8 @@ export function AutoRegisterPage() {
       
       const result = await window.api.activateOutlook({
         email: account.email,
-        emailPassword: account.password
+        emailPassword: account.password,
+        headless: useAutoRegisterStore.getState().headlessMode
       })
       
       if (result.success) {
@@ -538,11 +610,28 @@ export function AutoRegisterPage() {
             <input
               type="checkbox"
               checked={manualVerification}
-              onChange={(e) => setManualVerification(e.target.checked)}
+              onChange={(e) => {
+                const nextManualVerification = e.target.checked
+                setManualVerification(nextManualVerification)
+                if (nextManualVerification && headlessMode) {
+                  setHeadlessMode(false)
+                  addLog('⚠ 手动验证码模式已开启，已自动关闭无头模式')
+                }
+              }}
               disabled={isRunning}
               className="rounded"
             />
             手动验证码
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={headlessMode}
+              onChange={(e) => setHeadlessMode(e.target.checked)}
+              disabled={isRunning || manualVerification}
+              className="rounded"
+            />
+            无头模式
           </label>
           <Button variant="outline" onClick={activateOutlookOnly} disabled={isRunning || accounts.length === 0}>
             <Zap className="w-4 h-4 mr-2" />
@@ -613,15 +702,15 @@ export function AutoRegisterPage() {
               邮箱账号
             </CardTitle>
             <CardDescription>
-              格式: 邮箱|密码|refresh_token|client_id（手动验证码模式可只填 邮箱|密码）
+              格式1: 邮箱|密码|refresh_token|client_id；格式2: 邮箱----密码----client_id----refresh_token
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <textarea
               className="w-full h-32 p-3 border rounded-lg bg-background resize-none font-mono text-sm"
               placeholder={manualVerification
-                ? 'example@outlook.com|password'
-                : 'example@outlook.com|password|M.C509_xxx...|9e5f94bc-xxx...'}
+                ? 'example@outlook.com|password\nexample@outlook.com----password'
+                : 'example@outlook.com|password|M.C509_xxx...|9e5f94bc-xxx...\nexample@outlook.com----password----9e5f94bc-xxx----M.C509_xxx...'}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               disabled={isRunning}
@@ -655,7 +744,7 @@ export function AutoRegisterPage() {
             </Button>
           </CardHeader>
           <CardContent>
-            <div className="h-48 overflow-auto bg-black/90 rounded-lg p-3 font-mono text-xs space-y-0.5">
+            <div ref={logsContainerRef} className="h-48 overflow-auto bg-black/90 rounded-lg p-3 font-mono text-xs space-y-0.5">
               {logs.length === 0 ? (
                 <div className="text-gray-500">暂无日志</div>
               ) : (
@@ -671,7 +760,6 @@ export function AutoRegisterPage() {
                   </div>
                 ))
               )}
-              <div ref={logEndRef} />
             </div>
           </CardContent>
         </Card>
@@ -709,16 +797,25 @@ export function AutoRegisterPage() {
                       <td className="px-4 py-2 text-sm font-mono">
                         {account.ssoToken ? account.ssoToken.substring(0, 20) + '...' : '-'}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2 flex items-center gap-1">
                         {account.ssoToken && (
-                          <Button 
-                            variant="ghost" 
+                          <Button
+                            variant="ghost"
                             size="sm"
                             onClick={() => copyToken(account.ssoToken!)}
                           >
                             <Copy className="w-4 h-4" />
                           </Button>
                         )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeAccount(account.id)}
+                          disabled={account.status === 'registering' || account.status === 'activating'}
+                          className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
                       </td>
                     </tr>
                   ))}
@@ -738,14 +835,16 @@ export function AutoRegisterPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
-          <p>1. 输入邮箱账号信息，格式: <code className="bg-muted px-1 rounded">邮箱|密码|refresh_token|client_id</code></p>
+          <p>1. 输入邮箱账号信息，支持两种格式：</p>
           <p className="pl-4 text-xs">
+            - <code className="bg-muted px-1 rounded">邮箱|密码|refresh_token|client_id</code><br/>
+            - <code className="bg-muted px-1 rounded">邮箱----密码----client_id----refresh_token</code><br/>
             - 密码: 邮箱密码（用于 Outlook 激活）<br/>
             - refresh_token: OAuth2 刷新令牌 (M.C509_xxx...)<br/>
             - client_id: Graph API 客户端ID (9e5f94bc-xxx...)
           </p>
           <p className="pl-4 text-xs">
-            - 勾选"手动验证码"后，可只填写 <code className="bg-muted px-1 rounded">邮箱|密码</code><br/>
+            - 勾选"手动验证码"后，可只填写 <code className="bg-muted px-1 rounded">邮箱|密码</code> 或 <code className="bg-muted px-1 rounded">邮箱----密码</code><br/>
             - 到验证码页面时，程序会等待你在浏览器窗口中手动输入并提交
           </p>
           <p>2. <strong>账号重复检测</strong>: 导入时自动检测已存在的账号，显示"已存在"状态并跳过注册</p>
@@ -757,6 +856,7 @@ export function AutoRegisterPage() {
           </p>
           <p>5. <strong>代理设置</strong>: 输入代理地址用于 AWS 注册（Outlook 激活和获取验证码不使用代理）</p>
           <p>6. 点击"开始注册"，程序会并发完成 AWS Builder ID 注册</p>
+          <p>7. <strong>无头模式</strong>: 勾选后浏览器窗口不显示；与"手动验证码"互斥，手动模式会自动关闭无头</p>
           <p className="text-yellow-500 flex items-center gap-1">
             <AlertCircle className="w-4 h-4" />
             首次使用需要安装浏览器: 在终端运行 <code className="bg-muted px-1 rounded">npx playwright install chromium</code>
