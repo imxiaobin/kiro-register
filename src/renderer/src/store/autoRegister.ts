@@ -21,6 +21,8 @@ interface AutoRegisterState {
   logs: string[]
   // 并发数
   concurrency: number
+  // 本次目标注册数量
+  registerTargetCount: number
   // 是否跳过 Outlook 激活
   skipOutlookActivation: boolean
   // 是否手动输入验证码
@@ -48,6 +50,8 @@ interface AutoRegisterActions {
   setIsRunning: (running: boolean) => void
   // 设置并发数
   setConcurrency: (concurrency: number) => void
+  // 设置目标注册数量
+  setRegisterTargetCount: (count: number) => void
   // 设置跳过 Outlook 激活
   setSkipOutlookActivation: (skip: boolean) => void
   // 设置手动输入验证码
@@ -80,6 +84,7 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
   isRunning: false,
   logs: [],
   concurrency: 3,
+  registerTargetCount: 30,
   skipOutlookActivation: false,
   manualVerification: false,
   headlessMode: false,
@@ -145,6 +150,12 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
     set({ concurrency: Math.min(10, Math.max(1, concurrency)) })
   },
 
+  // 设置目标注册数量
+  setRegisterTargetCount: (count) => {
+    set({ registerTargetCount: Math.max(1, Math.floor(count) || 1) })
+    get().saveToStorage()
+  },
+
   // 设置跳过 Outlook 激活
   setSkipOutlookActivation: (skip) => {
     set({ skipOutlookActivation: skip })
@@ -172,8 +183,22 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
 
   // 持久化：保存到文件
   saveToStorage: async () => {
-    const { accounts, concurrency, skipOutlookActivation, manualVerification, headlessMode } = get()
-    await window.api.saveAutoRegister({ accounts, concurrency, skipOutlookActivation, manualVerification, headlessMode })
+    const {
+      accounts,
+      concurrency,
+      registerTargetCount,
+      skipOutlookActivation,
+      manualVerification,
+      headlessMode
+    } = get()
+    await window.api.saveAutoRegister({
+      accounts,
+      concurrency,
+      registerTargetCount,
+      skipOutlookActivation,
+      manualVerification,
+      headlessMode
+    })
   },
 
   // 持久化：从文件加载
@@ -181,6 +206,7 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
     const data = await window.api.loadAutoRegister() as {
       accounts?: RegisterAccount[]
       concurrency?: number
+      registerTargetCount?: number
       skipOutlookActivation?: boolean
       manualVerification?: boolean
       headlessMode?: boolean
@@ -195,6 +221,7 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
       set({
         accounts,
         concurrency: data.concurrency ?? 3,
+        registerTargetCount: data.registerTargetCount ?? 30,
         skipOutlookActivation: data.skipOutlookActivation ?? false,
         manualVerification: data.manualVerification ?? false,
         headlessMode: data.headlessMode ?? false

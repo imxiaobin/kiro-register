@@ -47,6 +47,7 @@ export function AccountToolbar({
     setFilter,
     selectedIds,
     selectAll,
+    selectFirstN,
     deselectAll,
     removeAccounts,
     batchRefreshTokens,
@@ -181,6 +182,11 @@ export function AccountToolbar({
     } else {
       selectAll()
     }
+  }
+
+  const handleSelectFirstThirty = (): void => {
+    if (filteredCount === 0) return
+    selectFirstN(30)
   }
 
   return (
@@ -487,6 +493,16 @@ export function AccountToolbar({
           <div className="w-px h-6 bg-border mx-2" />
 
           {/* 全选 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleSelectFirstThirty}
+            disabled={filteredCount === 0}
+            title={`按当前筛选结果选择前 ${Math.min(30, filteredCount)} 个账号`}
+          >
+            <Minus className="h-4 w-4 mr-1" />
+            选择前30个
+          </Button>
           <Button
             variant="ghost"
             size="sm"

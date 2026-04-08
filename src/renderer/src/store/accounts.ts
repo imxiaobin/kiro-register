@@ -144,6 +144,7 @@ interface AccountsActions {
   selectAccount: (id: string) => void
   deselectAccount: (id: string) => void
   selectAll: () => void
+  selectFirstN: (count: number) => void
   deselectAll: () => void
   toggleSelection: (id: string) => void
   getSelectedAccounts: () => Account[]
@@ -741,6 +742,11 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
   selectAll: () => {
     const filtered = get().getFilteredAccounts()
     set({ selectedIds: new Set(filtered.map((a) => a.id)) })
+  },
+
+  selectFirstN: (count) => {
+    const filtered = get().getFilteredAccounts()
+    set({ selectedIds: new Set(filtered.slice(0, count).map((a) => a.id)) })
   },
 
   deselectAll: () => {

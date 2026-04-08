@@ -24,6 +24,8 @@ import { useAutoRegisterStore, type RegisterAccount } from '@/store/autoRegister
 import { v4 as uuidv4 } from 'uuid'
 import { normalizeProxyInput, type ProxyProtocol } from '@/lib/proxy'
 
+const AUTO_STOP_CONSECUTIVE_FAILURES = 3
+
 export function AutoRegisterPage() {
   const [inputText, setInputText] = useState('')
   const [proxyTestStatus, setProxyTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
@@ -36,6 +38,7 @@ export function AutoRegisterPage() {
     isRunning,
     logs,
     concurrency,
+    registerTargetCount,
     skipOutlookActivation,
     manualVerification,
     headlessMode,
@@ -47,6 +50,7 @@ export function AutoRegisterPage() {
     clearLogs,
     setIsRunning,
     setConcurrency,
+    setRegisterTargetCount,
     setSkipOutlookActivation,
     setManualVerification,
     setHeadlessMode,
@@ -308,10 +312,10 @@ export function AutoRegisterPage() {
   }
 
   // 单个账号注册任务（使用全局 store 的 shouldStop）
-  const registerSingleAccount = async (account: RegisterAccount): Promise<void> => {
+  const registerSingleAccount = async (account: RegisterAccount): Promise<'success' | 'failed' | 'skipped'> => {
     // 检查全局停止标志
-    if (useAutoRegisterStore.getState().shouldStop) return
-    if (account.status === 'success' || account.status === 'exists') return
+    if (useAutoRegisterStore.getState().shouldStop) return 'skipped'
+    if (account.status === 'success' || account.status === 'exists') return 'skipped'
     
     try {
       updateAccountStatus(account.id, { status: 'registering' })
@@ -344,6 +348,7 @@ export function AutoRegisterPage() {
         
         // 使用 SSO Token 导入账号
         await importWithSsoToken(account, result.ssoToken, result.name || account.email.split('@')[0])
+        return 'success'
         
       } else {
         updateAccountStatus(account.id, { 
@@ -351,6 +356,7 @@ export function AutoRegisterPage() {
           error: result.error || '注册失败'
         })
         addLog(`[${account.email}] ✗ 注册失败: ${result.error}`)
+        return 'failed'
       }
       
     } catch (error) {
@@ -359,14 +365,18 @@ export function AutoRegisterPage() {
         error: String(error)
       })
       addLog(`[${account.email}] ✗ 错误: ${error}`)
+      return 'failed'
     }
   }
 
   const startRegistration = async () => {
     // 过滤掉已存在和已成功的账号
     const pendingAccounts = accounts.filter(a => a.status === 'pending' || a.status === 'failed')
+    const targetAccounts = pendingAccounts.slice(0, registerTargetCount)
+    const skippedFinishedCount = accounts.length - pendingAccounts.length
+    const deferredCount = pendingAccounts.length - targetAccounts.length
     
-    if (pendingAccounts.length === 0) {
+    if (targetAccounts.length === 0) {
       alert('没有需要注册的账号（已存在或已成功的账号会被跳过）')
       return
     }
@@ -374,7 +384,13 @@ export function AutoRegisterPage() {
     setIsRunning(true)
     resetStop()
     addLog(`========== 开始批量注册 (并发数: ${concurrency}) ==========`)
-    addLog(`待注册: ${pendingAccounts.length} 个，已跳过: ${accounts.length - pendingAccounts.length} 个`)
+    addLog(`本次目标注册: ${registerTargetCount} 个，实际执行: ${targetAccounts.length} 个，已完成/已存在: ${skippedFinishedCount} 个`)
+    if (deferredCount > 0) {
+      addLog(`剩余待注册但本次未执行: ${deferredCount} 个`)
+    }
+    if (pendingAccounts.length < registerTargetCount) {
+      addLog(`⚠ 可注册账号仅 ${pendingAccounts.length} 个，未达到目标数量`)
+    }
     addLog(`浏览器模式: ${manualVerification ? '有头（手动验证码）' : (headlessMode ? '无头' : '有头')}`)
     if (manualVerification) {
       addLog('当前为手动验证码模式，请在浏览器窗口中自行输入验证码并点击 Continue')
@@ -385,8 +401,9 @@ export function AutoRegisterPage() {
     
     // 并发执行注册任务
     const runConcurrent = async () => {
-      const queue = [...pendingAccounts]
+      const queue = [...targetAccounts]
       const running: Promise<void>[] = []
+      let consecutiveFailures = 0
       
       while (queue.length > 0 || running.length > 0) {
         // 检查全局停止标志
@@ -398,7 +415,16 @@ export function AutoRegisterPage() {
         // 填充到并发数
         while (queue.length > 0 && running.length < concurrency) {
           const account = queue.shift()!
-          const task = registerSingleAccount(account).then(() => {
+          const task = registerSingleAccount(account).then((result) => {
+            if (result === 'success') {
+              consecutiveFailures = 0
+            } else if (result === 'failed') {
+              consecutiveFailures += 1
+              if (consecutiveFailures >= AUTO_STOP_CONSECUTIVE_FAILURES && !useAutoRegisterStore.getState().shouldStop) {
+                requestStop()
+                addLog(`⚠ 连续失败 ${AUTO_STOP_CONSECUTIVE_FAILURES} 个，已自动停止注册`)
+              }
+            }
             // 任务完成后从 running 中移除
             const index = running.indexOf(task)
             if (index > -1) running.splice(index, 1)
@@ -595,6 +621,18 @@ export function AutoRegisterPage() {
                 <option key={n} value={n}>{n}</option>
               ))}
             </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">总数:</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={registerTargetCount}
+              onChange={(e) => setRegisterTargetCount(Number(e.target.value))}
+              disabled={isRunning}
+              className="px-2 py-1.5 border rounded-lg bg-background text-sm w-20"
+            />
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input
