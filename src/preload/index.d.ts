@@ -516,10 +516,19 @@ interface KiroApi {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
+    luckMailConfig?: {
+      apiKey: string
+      projectCode: string
+      emailType?: string
+      domain?: string
+      specifiedEmail?: string
+    }
   }) => Promise<{
     success: boolean
     ssoToken?: string
     name?: string
+    email?: string
     error?: string
   }>
 
@@ -528,6 +537,7 @@ interface KiroApi {
     email: string
     emailPassword: string
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
   }) => Promise<{
     success: boolean
     error?: string

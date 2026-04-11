@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+export type HumanizationLevel = 'low' | 'medium' | 'high'
+
 export interface RegisterAccount {
   id: string
   email: string
@@ -10,6 +12,7 @@ export interface RegisterAccount {
   awsName?: string
   ssoToken?: string
   error?: string
+  isLuckMail?: boolean  // 是否为 LuckMail 平台分配的任务
 }
 
 interface AutoRegisterState {
@@ -29,8 +32,18 @@ interface AutoRegisterState {
   manualVerification: boolean
   // 是否使用无头模式运行浏览器
   headlessMode: boolean
+  // 拟人化强度
+  humanizationLevel: HumanizationLevel
   // 停止标志
   shouldStop: boolean
+  // LuckMail 配置
+  useLuckMail: boolean
+  luckMailApiKey: string
+  luckMailProjectCode: string
+  luckMailEmailType: string
+  luckMailDomain: string
+  luckMailSpecifiedEmail: string
+  luckMailTaskCount: number
 }
 
 interface AutoRegisterActions {
@@ -58,6 +71,16 @@ interface AutoRegisterActions {
   setManualVerification: (manual: boolean) => void
   // 设置无头模式
   setHeadlessMode: (headless: boolean) => void
+  // 设置拟人化强度
+  setHumanizationLevel: (level: HumanizationLevel) => void
+  // 设置 LuckMail 配置
+  setUseLuckMail: (use: boolean) => void
+  setLuckMailApiKey: (key: string) => void
+  setLuckMailProjectCode: (code: string) => void
+  setLuckMailEmailType: (emailType: string) => void
+  setLuckMailDomain: (domain: string) => void
+  setLuckMailSpecifiedEmail: (email: string) => void
+  setLuckMailTaskCount: (count: number) => void
   // 请求停止
   requestStop: () => void
   // 重置停止标志
@@ -88,7 +111,15 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
   skipOutlookActivation: false,
   manualVerification: false,
   headlessMode: false,
+  humanizationLevel: 'medium',
   shouldStop: false,
+  useLuckMail: false,
+  luckMailApiKey: '',
+  luckMailProjectCode: '',
+  luckMailEmailType: '',
+  luckMailDomain: '',
+  luckMailSpecifiedEmail: '',
+  luckMailTaskCount: 10,
 
   // 添加账号
   addAccounts: (newAccounts) => {
@@ -170,6 +201,40 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
   setHeadlessMode: (headless) => {
     set({ headlessMode: headless })
   },
+  setHumanizationLevel: (level) => {
+    set({ humanizationLevel: level })
+    get().saveToStorage()
+  },
+
+  // 设置 LuckMail 配置
+  setUseLuckMail: (use) => {
+    set({ useLuckMail: use })
+    get().saveToStorage()
+  },
+  setLuckMailApiKey: (key) => {
+    set({ luckMailApiKey: key })
+    get().saveToStorage()
+  },
+  setLuckMailProjectCode: (code) => {
+    set({ luckMailProjectCode: code })
+    get().saveToStorage()
+  },
+  setLuckMailEmailType: (emailType) => {
+    set({ luckMailEmailType: emailType })
+    get().saveToStorage()
+  },
+  setLuckMailDomain: (domain) => {
+    set({ luckMailDomain: domain })
+    get().saveToStorage()
+  },
+  setLuckMailSpecifiedEmail: (email) => {
+    set({ luckMailSpecifiedEmail: email })
+    get().saveToStorage()
+  },
+  setLuckMailTaskCount: (count) => {
+    set({ luckMailTaskCount: Math.max(1, Math.floor(count) || 1) })
+    get().saveToStorage()
+  },
 
   // 请求停止
   requestStop: () => {
@@ -189,7 +254,15 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
       registerTargetCount,
       skipOutlookActivation,
       manualVerification,
-      headlessMode
+      headlessMode,
+      humanizationLevel,
+      useLuckMail,
+      luckMailApiKey,
+      luckMailProjectCode,
+      luckMailEmailType,
+      luckMailDomain,
+      luckMailSpecifiedEmail,
+      luckMailTaskCount
     } = get()
     await window.api.saveAutoRegister({
       accounts,
@@ -197,7 +270,15 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
       registerTargetCount,
       skipOutlookActivation,
       manualVerification,
-      headlessMode
+      headlessMode,
+      humanizationLevel,
+      useLuckMail,
+      luckMailApiKey,
+      luckMailProjectCode,
+      luckMailEmailType,
+      luckMailDomain,
+      luckMailSpecifiedEmail,
+      luckMailTaskCount
     })
   },
 
@@ -210,6 +291,14 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
       skipOutlookActivation?: boolean
       manualVerification?: boolean
       headlessMode?: boolean
+      humanizationLevel?: HumanizationLevel
+      useLuckMail?: boolean
+      luckMailApiKey?: string
+      luckMailProjectCode?: string
+      luckMailEmailType?: string
+      luckMailDomain?: string
+      luckMailSpecifiedEmail?: string
+      luckMailTaskCount?: number
     } | null
     if (data) {
       // 将正在运行中的状态重置为 pending（应用重启后不可能还在运行）
@@ -224,7 +313,15 @@ export const useAutoRegisterStore = create<AutoRegisterStore>()((set, get) => ({
         registerTargetCount: data.registerTargetCount ?? 30,
         skipOutlookActivation: data.skipOutlookActivation ?? false,
         manualVerification: data.manualVerification ?? false,
-        headlessMode: data.headlessMode ?? false
+        headlessMode: data.headlessMode ?? false,
+        humanizationLevel: data.humanizationLevel ?? 'medium',
+        useLuckMail: data.useLuckMail ?? false,
+        luckMailApiKey: data.luckMailApiKey ?? '',
+        luckMailProjectCode: data.luckMailProjectCode ?? '',
+        luckMailEmailType: data.luckMailEmailType ?? '',
+        luckMailDomain: data.luckMailDomain ?? '',
+        luckMailSpecifiedEmail: data.luckMailSpecifiedEmail ?? '',
+        luckMailTaskCount: data.luckMailTaskCount ?? 10
       })
     }
   },

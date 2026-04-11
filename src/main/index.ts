@@ -1233,20 +1233,99 @@ app.whenReady().then(() => {
 
       let userInfo: UserInfoResponse | undefined
       let usageData: UsageApiResponse | undefined
+      let usageError: Error | undefined
+      let finalAccessToken = ssoResult.accessToken
+      let finalRefreshToken = ssoResult.refreshToken
+      let finalExpiresIn = ssoResult.expiresIn
 
-      try {
-        console.log('[SSO] Fetching user info and usage data...')
-        const [userInfoResult, usageResult] = await Promise.all([
-          getUserInfo(ssoResult.accessToken).catch(e => { console.error('[SSO] getUserInfo failed:', e); return undefined }),
-          kiroApiRequest<UsageApiResponse>('GetUserUsageAndLimits', { isEmailRequired: true, origin: 'KIRO_IDE' }, ssoResult.accessToken).catch(e => { console.error('[SSO] GetUserUsageAndLimits failed:', e); return undefined })
+      const fetchUserInfoAndUsage = async (accessToken: string): Promise<{
+        userInfo?: UserInfoResponse
+        usageData?: UsageApiResponse
+        usageError?: Error
+      }> => {
+        const [userInfoResult, usageResult] = await Promise.allSettled([
+          getUserInfo(accessToken),
+          kiroApiRequest<UsageApiResponse>(
+            'GetUserUsageAndLimits',
+            { isEmailRequired: true, origin: 'KIRO_IDE' },
+            accessToken
+          )
         ])
-        userInfo = userInfoResult
-        usageData = usageResult
-        console.log('[SSO] userInfo:', userInfo?.email)
-        console.log('[SSO] usageData:', usageData?.subscriptionInfo?.subscriptionTitle)
-      } catch (e) {
-        console.error('[IPC] API calls failed:', e)
+
+        const result: { userInfo?: UserInfoResponse; usageData?: UsageApiResponse; usageError?: Error } = {}
+        if (userInfoResult.status === 'fulfilled') {
+          result.userInfo = userInfoResult.value
+        } else {
+          console.error('[SSO] getUserInfo failed:', userInfoResult.reason)
+        }
+
+        if (usageResult.status === 'fulfilled') {
+          result.usageData = usageResult.value
+        } else {
+          const err = usageResult.reason instanceof Error
+            ? usageResult.reason
+            : new Error(String(usageResult.reason))
+          console.error('[SSO] GetUserUsageAndLimits failed:', err)
+          result.usageError = err
+        }
+
+        return result
       }
+
+      console.log('[SSO] Fetching user info and usage data...')
+      ;({ userInfo, usageData, usageError } = await fetchUserInfoAndUsage(finalAccessToken))
+
+      if (userInfo?.status === 'Stale') {
+        console.error('[SSO] GetUserInfo returned status=Stale')
+
+        if (!finalRefreshToken || !ssoResult.clientId || !ssoResult.clientSecret) {
+          return {
+            success: false,
+            error: { message: '用户状态为 Stale，且缺少可用 refresh 凭证，请重新登录后再试' }
+          }
+        }
+
+        console.log('[SSO] User status is Stale, waiting 5 seconds before refresh retry...')
+        await new Promise(resolve => setTimeout(resolve, 5000))
+
+        const refreshResult = await refreshTokenByMethod(
+          finalRefreshToken,
+          ssoResult.clientId,
+          ssoResult.clientSecret,
+          ssoResult.region || region
+        )
+
+        if (!refreshResult.success || !refreshResult.accessToken) {
+          return {
+            success: false,
+            error: { message: `用户状态为 Stale，5 秒后自动刷新重试失败: ${refreshResult.error || 'Token 刷新失败'}` }
+          }
+        }
+
+        finalAccessToken = refreshResult.accessToken
+        finalRefreshToken = refreshResult.refreshToken || finalRefreshToken
+        finalExpiresIn = refreshResult.expiresIn ?? finalExpiresIn
+
+        console.log('[SSO] Token refreshed after Stale, retrying user info and usage...')
+        ;({ userInfo, usageData, usageError } = await fetchUserInfoAndUsage(finalAccessToken))
+
+        if (userInfo?.status === 'Stale') {
+          return {
+            success: false,
+            error: { message: '用户状态仍为 Stale（已在 5 秒后自动 refresh 并重试 1 次），请稍后再试或重新登录' }
+          }
+        }
+      }
+
+      if (!usageData) {
+        return {
+          success: false,
+          error: { message: usageError ? `获取使用量失败: ${usageError.message}` : '获取使用量失败：未返回有效数据' }
+        }
+      }
+
+      console.log('[SSO] userInfo:', userInfo?.email)
+      console.log('[SSO] usageData:', usageData.subscriptionInfo?.subscriptionTitle)
 
       // 解析使用量数据
       const creditUsage = usageData?.usageBreakdownList?.find(b => b.resourceType === 'CREDIT')
@@ -1289,12 +1368,12 @@ app.whenReady().then(() => {
       return {
         success: true,
         data: {
-          accessToken: ssoResult.accessToken,
-          refreshToken: ssoResult.refreshToken,
+          accessToken: finalAccessToken,
+          refreshToken: finalRefreshToken,
           clientId: ssoResult.clientId,
           clientSecret: ssoResult.clientSecret,
           region: ssoResult.region,
-          expiresIn: ssoResult.expiresIn,
+          expiresIn: finalExpiresIn,
           email: usageData?.userInfo?.email || userInfo?.email,
           userId: usageData?.userInfo?.userId || userInfo?.userId,
           idp: userInfo?.idp || 'BuilderId',
@@ -3885,21 +3964,29 @@ app.whenReady().then(() => {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
+    luckMailConfig?: {
+      apiKey: string
+      projectCode: string
+      emailType?: string
+      domain?: string
+      specifiedEmail?: string
+    }
   }) => {
-    console.log('[AutoRegister] Starting registration for:', params.email)
+    console.log('[AutoRegister] Starting registration for:', params.luckMailConfig ? '(LuckMail)' : params.email)
     if (params.proxyUrl) {
       console.log('[AutoRegister] Using proxy:', params.proxyUrl)
     }
-    
+
     // 动态导入自动注册模块
     const { autoRegisterAWS } = await import('./autoRegister')
-    
+
     // 日志回调
     const sendLog = (message: string) => {
       console.log('[AutoRegister]', message)
-      mainWindow?.webContents.send('auto-register-log', { email: params.email, message })
+      mainWindow?.webContents.send('auto-register-log', { email: params.luckMailConfig ? 'LuckMail' : params.email, message })
     }
-    
+
     try {
       const result = await autoRegisterAWS(
         params.email,
@@ -3910,7 +3997,9 @@ app.whenReady().then(() => {
         params.skipOutlookActivation || false,
         params.proxyUrl,
         params.manualVerification || false,
-        params.headless || false
+        params.headless || false,
+        params.humanizationLevel || 'medium',
+        params.luckMailConfig
       )
       
       return result
@@ -3925,6 +4014,7 @@ app.whenReady().then(() => {
     email: string
     emailPassword: string
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
   }) => {
     console.log('[ActivateOutlook] Starting activation for:', params.email)
     
@@ -3942,7 +4032,8 @@ app.whenReady().then(() => {
         params.email,
         params.emailPassword,
         sendLog,
-        params.headless || false
+        params.headless || false,
+        params.humanizationLevel || 'medium'
       )
       
       return result

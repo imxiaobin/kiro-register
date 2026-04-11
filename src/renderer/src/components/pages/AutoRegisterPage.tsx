@@ -20,7 +20,7 @@ import { Button } from '../ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { useAccountsStore } from '@/store/accounts'
-import { useAutoRegisterStore, type RegisterAccount } from '@/store/autoRegister'
+import { useAutoRegisterStore, type RegisterAccount, type HumanizationLevel } from '@/store/autoRegister'
 import { v4 as uuidv4 } from 'uuid'
 import { normalizeProxyInput, type ProxyProtocol } from '@/lib/proxy'
 
@@ -30,6 +30,7 @@ export function AutoRegisterPage() {
   const [inputText, setInputText] = useState('')
   const [proxyTestStatus, setProxyTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle')
   const [proxyTestMessage, setProxyTestMessage] = useState('')
+  const [registerMode, setRegisterMode] = useState<'own' | 'luckmail' | 'all'>('own')
   const logsContainerRef = useRef<HTMLDivElement>(null)
   
   // 使用全局 store
@@ -42,6 +43,10 @@ export function AutoRegisterPage() {
     skipOutlookActivation,
     manualVerification,
     headlessMode,
+    humanizationLevel,
+    useLuckMail,
+    luckMailApiKey,
+    luckMailProjectCode,
     addAccounts,
     removeAccount,
     clearAccounts,
@@ -54,6 +59,18 @@ export function AutoRegisterPage() {
     setSkipOutlookActivation,
     setManualVerification,
     setHeadlessMode,
+    setHumanizationLevel,
+    setUseLuckMail,
+    setLuckMailApiKey,
+    setLuckMailProjectCode,
+    luckMailEmailType,
+    luckMailDomain,
+    luckMailSpecifiedEmail,
+    setLuckMailEmailType,
+    setLuckMailDomain,
+    setLuckMailSpecifiedEmail,
+    luckMailTaskCount,
+    setLuckMailTaskCount,
     requestStop,
     resetStop,
     getStats,
@@ -209,6 +226,22 @@ export function AutoRegisterPage() {
     clearAccounts()
   }
 
+  // LuckMail 模式：生成占位注册任务
+  const handleGenerateLuckMailTasks = () => {
+    const count = useAutoRegisterStore.getState().luckMailTaskCount
+    const placeholders = Array.from({ length: count }, () => ({
+      id: uuidv4(),
+      email: '(LuckMail 待分配)',
+      password: '',
+      refreshToken: '',
+      clientId: '',
+      status: 'pending' as const,
+      isLuckMail: true
+    }))
+    addAccounts(placeholders)
+    addLog(`已生成 ${count} 个 LuckMail 注册任务`)
+  }
+
   const handleTestProxyConnection = async () => {
     if (!proxyUrl.trim()) {
       alert('请输入代理地址')
@@ -323,9 +356,26 @@ export function AutoRegisterPage() {
       const {
         skipOutlookActivation: runtimeSkipOutlookActivation,
         manualVerification: runtimeManualVerification,
-        headlessMode: runtimeHeadlessMode
+        headlessMode: runtimeHeadlessMode,
+        humanizationLevel: runtimeHumanizationLevel,
+        useLuckMail: runtimeUseLuckMail,
+        luckMailApiKey: runtimeLuckMailApiKey,
+        luckMailProjectCode: runtimeLuckMailProjectCode,
+        luckMailEmailType: runtimeLuckMailEmailType,
+        luckMailDomain: runtimeLuckMailDomain,
+        luckMailSpecifiedEmail: runtimeLuckMailSpecifiedEmail
       } = useAutoRegisterStore.getState()
-      
+
+      const luckMailConfig = account.isLuckMail && runtimeUseLuckMail && runtimeLuckMailApiKey && runtimeLuckMailProjectCode
+        ? {
+            apiKey: runtimeLuckMailApiKey,
+            projectCode: runtimeLuckMailProjectCode,
+            emailType: runtimeLuckMailEmailType.trim() || undefined,
+            domain: runtimeLuckMailDomain.trim() || undefined,
+            specifiedEmail: runtimeLuckMailSpecifiedEmail.trim() || undefined
+          }
+        : undefined
+
       // 调用主进程的自动注册功能
       const result = await window.api.autoRegisterAWS({
         email: account.email,
@@ -335,33 +385,41 @@ export function AutoRegisterPage() {
         skipOutlookActivation: runtimeSkipOutlookActivation,
         proxyUrl: proxyUrl ? normalizeProxyInput(proxyUrl, proxyProtocol) : undefined,
         manualVerification: runtimeManualVerification,
-        headless: runtimeHeadlessMode && !runtimeManualVerification
+        headless: runtimeHeadlessMode && !runtimeManualVerification,
+        humanizationLevel: runtimeHumanizationLevel,
+        luckMailConfig
       })
-      
+
       if (result.success && result.ssoToken) {
-        updateAccountStatus(account.id, { 
-          status: 'success', 
+        const actualEmail = result.email || account.email
+        updateAccountStatus(account.id, {
+          status: 'success',
           ssoToken: result.ssoToken,
-          awsName: result.name
+          awsName: result.name,
+          ...(result.email ? { email: result.email } : {})
         })
-        addLog(`[${account.email}] ✓ 注册成功!`)
-        
+        addLog(`[${actualEmail}] ✓ 注册成功!`)
+
         // 使用 SSO Token 导入账号
-        await importWithSsoToken(account, result.ssoToken, result.name || account.email.split('@')[0])
+        await importWithSsoToken(
+          { ...account, email: actualEmail },
+          result.ssoToken,
+          result.name || actualEmail.split('@')[0]
+        )
         return 'success'
-        
+
       } else {
-        updateAccountStatus(account.id, { 
-          status: 'failed', 
+        updateAccountStatus(account.id, {
+          status: 'failed',
           error: result.error || '注册失败'
         })
         addLog(`[${account.email}] ✗ 注册失败: ${result.error}`)
         return 'failed'
       }
-      
+
     } catch (error) {
-      updateAccountStatus(account.id, { 
-        status: 'failed', 
+      updateAccountStatus(account.id, {
+        status: 'failed',
         error: String(error)
       })
       addLog(`[${account.email}] ✗ 错误: ${error}`)
@@ -370,26 +428,61 @@ export function AutoRegisterPage() {
   }
 
   const startRegistration = async () => {
-    // 过滤掉已存在和已成功的账号
-    const pendingAccounts = accounts.filter(a => a.status === 'pending' || a.status === 'failed')
-    const targetAccounts = pendingAccounts.slice(0, registerTargetCount)
-    const skippedFinishedCount = accounts.length - pendingAccounts.length
-    const deferredCount = pendingAccounts.length - targetAccounts.length
-    
+    const state = useAutoRegisterStore.getState()
+    const { useLuckMail: runtimeUseLuckMail, luckMailApiKey: runtimeKey, luckMailProjectCode: runtimeCode, luckMailTaskCount: taskCount } = state
+
+    const needsLuckMail = registerMode === 'luckmail' || registerMode === 'all'
+    const needsOwn = registerMode === 'own' || registerMode === 'all'
+
+    // LuckMail 模式校验 + 自动生成占位任务
+    if (needsLuckMail) {
+      if (!runtimeUseLuckMail || !runtimeKey || !runtimeCode) {
+        alert('请先在 LuckMail 配置中启用并填写 API Key 和项目代码')
+        return
+      }
+      const pendingLuckMail = state.accounts.filter(a => (a.status === 'pending' || a.status === 'failed') && a.isLuckMail)
+      if (pendingLuckMail.length === 0) {
+        const placeholders = Array.from({ length: taskCount }, () => ({
+          id: uuidv4(),
+          email: '(LuckMail 待分配)',
+          password: '',
+          refreshToken: '',
+          clientId: '',
+          status: 'pending' as const,
+          isLuckMail: true
+        }))
+        addAccounts(placeholders)
+        addLog(`[LuckMail] 自动生成 ${taskCount} 个注册任务`)
+      }
+    }
+
+    // 根据模式过滤并限制数量
+    const allAccounts = useAutoRegisterStore.getState().accounts
+    let targetAccounts: RegisterAccount[] = []
+    if (needsOwn) {
+      const ownPending = allAccounts.filter(a => !a.isLuckMail && (a.status === 'pending' || a.status === 'failed'))
+      targetAccounts = [...targetAccounts, ...ownPending.slice(0, registerTargetCount)]
+    }
+    if (needsLuckMail) {
+      const luckPending = allAccounts.filter(a => a.isLuckMail && (a.status === 'pending' || a.status === 'failed'))
+      targetAccounts = [...targetAccounts, ...luckPending.slice(0, taskCount)]
+    }
+
     if (targetAccounts.length === 0) {
       alert('没有需要注册的账号（已存在或已成功的账号会被跳过）')
       return
     }
+
+    const skippedFinishedCount = allAccounts.length - allAccounts.filter(a => a.status === 'pending' || a.status === 'failed').length
+    const deferredCount = 0
     
     setIsRunning(true)
     resetStop()
     addLog(`========== 开始批量注册 (并发数: ${concurrency}) ==========`)
     addLog(`本次目标注册: ${registerTargetCount} 个，实际执行: ${targetAccounts.length} 个，已完成/已存在: ${skippedFinishedCount} 个`)
+    addLog(`拟人化强度: ${humanizationLevel === 'low' ? '低' : humanizationLevel === 'high' ? '高' : '中'}`)
     if (deferredCount > 0) {
       addLog(`剩余待注册但本次未执行: ${deferredCount} 个`)
-    }
-    if (pendingAccounts.length < registerTargetCount) {
-      addLog(`⚠ 可注册账号仅 ${pendingAccounts.length} 个，未达到目标数量`)
     }
     addLog(`浏览器模式: ${manualVerification ? '有头（手动验证码）' : (headlessMode ? '无头' : '有头')}`)
     if (manualVerification) {
@@ -485,7 +578,8 @@ export function AutoRegisterPage() {
       const result = await window.api.activateOutlook({
         email: account.email,
         emailPassword: account.password,
-        headless: useAutoRegisterStore.getState().headlessMode
+        headless: useAutoRegisterStore.getState().headlessMode,
+        humanizationLevel: useAutoRegisterStore.getState().humanizationLevel
       })
       
       if (result.success) {
@@ -551,6 +645,8 @@ export function AutoRegisterPage() {
   }
 
   const stats = getStats()
+  const ownAccounts = accounts.filter(a => !a.isLuckMail)
+  const luckMailAccounts = accounts.filter(a => a.isLuckMail)
 
   return (
     <div className="p-6 space-y-6">
@@ -671,17 +767,50 @@ export function AutoRegisterPage() {
             />
             无头模式
           </label>
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">拟人化:</span>
+            <select
+              value={humanizationLevel}
+              onChange={(e) => setHumanizationLevel(e.target.value as HumanizationLevel)}
+              disabled={isRunning}
+              className="px-2 py-1.5 border rounded-lg bg-background text-sm"
+            >
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+          </div>
           <Button variant="outline" onClick={activateOutlookOnly} disabled={isRunning || accounts.length === 0}>
             <Zap className="w-4 h-4 mr-2" />
             激活 Outlook
           </Button>
+          <div className="flex items-center gap-1">
+            <span className="text-sm text-muted-foreground">模式:</span>
+            <select
+              value={registerMode}
+              onChange={(e) => setRegisterMode(e.target.value as 'own' | 'luckmail' | 'all')}
+              disabled={isRunning}
+              className="px-2 py-1.5 border rounded-lg bg-background text-sm"
+            >
+              <option value="own">自有邮箱</option>
+              <option value="luckmail">LuckMail</option>
+              <option value="all">两者</option>
+            </select>
+          </div>
           {isRunning ? (
             <Button variant="destructive" onClick={stopRegistration}>
               <Square className="w-4 h-4 mr-2" />
               停止
             </Button>
           ) : (
-            <Button onClick={startRegistration} disabled={accounts.length === 0}>
+            <Button
+              onClick={startRegistration}
+              disabled={
+                (registerMode === 'own' && ownAccounts.length === 0) ||
+                (registerMode === 'luckmail' && !useLuckMail) ||
+                (registerMode === 'all' && ownAccounts.length === 0 && !useLuckMail)
+              }
+            >
               <Play className="w-4 h-4 mr-2" />
               开始注册
             </Button>
@@ -730,6 +859,110 @@ export function AutoRegisterPage() {
           </Card>
         </div>
       )}
+
+      {/* LuckMail 配置 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Key className="w-5 h-5" />
+            LuckMail 接入（Mode A：按单收码，平台分配邮箱）
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={useLuckMail}
+              onChange={(e) => setUseLuckMail(e.target.checked)}
+              disabled={isRunning}
+              className="rounded"
+            />
+            启用 LuckMail 自动收码（启用后无需手动提供邮箱，由平台分配）
+          </label>
+          {useLuckMail && (
+            <div className="flex flex-wrap gap-3 items-end">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">API Key</span>
+                <input
+                  type="password"
+                  placeholder="输入 LuckMail API Key"
+                  value={luckMailApiKey}
+                  onChange={(e) => setLuckMailApiKey(e.target.value)}
+                  disabled={isRunning}
+                  className="px-3 py-1.5 border rounded-lg bg-background text-sm w-64 font-mono"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">项目代码</span>
+                <input
+                  type="text"
+                  placeholder="如 kiro_aws"
+                  value={luckMailProjectCode}
+                  onChange={(e) => setLuckMailProjectCode(e.target.value)}
+                  disabled={isRunning}
+                  className="px-3 py-1.5 border rounded-lg bg-background text-sm w-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">任务数量</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={luckMailTaskCount}
+                  onChange={(e) => setLuckMailTaskCount(Number(e.target.value))}
+                  disabled={isRunning}
+                  className="px-2 py-1.5 border rounded-lg bg-background text-sm w-20"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">邮箱类型（可选）</span>
+                <input
+                  type="text"
+                  placeholder="如 ms_graph"
+                  value={luckMailEmailType}
+                  onChange={(e) => setLuckMailEmailType(e.target.value)}
+                  disabled={isRunning}
+                  className="px-2 py-1.5 border rounded-lg bg-background text-sm w-32"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">域名（可选）</span>
+                <input
+                  type="text"
+                  placeholder="如 outlook.com"
+                  value={luckMailDomain}
+                  onChange={(e) => setLuckMailDomain(e.target.value)}
+                  disabled={isRunning}
+                  className="px-3 py-1.5 border rounded-lg bg-background text-sm w-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">指定邮箱（可选）</span>
+                <input
+                  type="text"
+                  placeholder="如 test@example.com"
+                  value={luckMailSpecifiedEmail}
+                  onChange={(e) => setLuckMailSpecifiedEmail(e.target.value)}
+                  disabled={isRunning}
+                  className="px-3 py-1.5 border rounded-lg bg-background text-sm w-56"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateLuckMailTasks}
+                disabled={isRunning}
+              >
+                生成 {luckMailTaskCount} 个注册任务
+              </Button>
+              <p className="text-xs text-muted-foreground w-full">
+                点击"开始注册"时若任务列表为空，将自动按上方总数生成占位任务；注册成功后邮箱将更新为平台实际分配的地址。
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-2 gap-6">
         {/* 左侧：输入区域 */}
@@ -803,13 +1036,14 @@ export function AutoRegisterPage() {
         </Card>
       </div>
 
-      {/* 账号列表 */}
-      {accounts.length > 0 && (
+      {/* 自有邮箱列表 */}
+      {ownAccounts.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Key className="w-5 h-5" />
-              注册列表
+              <Mail className="w-5 h-5" />
+              自有邮箱注册列表
+              <Badge variant="secondary">{ownAccounts.length}</Badge>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -826,7 +1060,69 @@ export function AutoRegisterPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {accounts.map((account, index) => (
+                  {ownAccounts.map((account, index) => (
+                    <tr key={account.id} className="border-t">
+                      <td className="px-4 py-2 text-sm">{index + 1}</td>
+                      <td className="px-4 py-2 text-sm font-mono">{account.email}</td>
+                      <td className="px-4 py-2 text-sm">{account.awsName || '-'}</td>
+                      <td className="px-4 py-2">{getStatusBadge(account.status)}</td>
+                      <td className="px-4 py-2 text-sm font-mono">
+                        {account.ssoToken ? account.ssoToken.substring(0, 20) + '...' : '-'}
+                      </td>
+                      <td className="px-4 py-2 flex items-center gap-1">
+                        {account.ssoToken && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => copyToken(account.ssoToken!)}
+                          >
+                            <Copy className="w-4 h-4" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeAccount(account.id)}
+                          disabled={account.status === 'registering' || account.status === 'activating'}
+                          className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* LuckMail 任务列表 */}
+      {luckMailAccounts.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Key className="w-5 h-5" />
+              LuckMail 注册任务列表
+              <Badge variant="secondary">{luckMailAccounts.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-sm font-medium">序号</th>
+                    <th className="px-4 py-2 text-left text-sm font-medium">邮箱（注册后更新）</th>
+                    <th className="px-4 py-2 text-left text-sm font-medium">姓名</th>
+                    <th className="px-4 py-2 text-left text-sm font-medium">状态</th>
+                    <th className="px-4 py-2 text-left text-sm font-medium">Token</th>
+                    <th className="px-4 py-2 text-left text-sm font-medium">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {luckMailAccounts.map((account, index) => (
                     <tr key={account.id} className="border-t">
                       <td className="px-4 py-2 text-sm">{index + 1}</td>
                       <td className="px-4 py-2 text-sm font-mono">{account.email}</td>
@@ -895,6 +1191,7 @@ export function AutoRegisterPage() {
           <p>5. <strong>代理设置</strong>: 输入代理地址用于 AWS 注册（Outlook 激活和获取验证码不使用代理）</p>
           <p>6. 点击"开始注册"，程序会并发完成 AWS Builder ID 注册</p>
           <p>7. <strong>无头模式</strong>: 勾选后浏览器窗口不显示；与"手动验证码"互斥，手动模式会自动关闭无头</p>
+          <p>8. <strong>拟人化强度</strong>: 低/中/高 三档，越高越接近手工操作（输入停顿、鼠标轨迹、键盘导航、阅读停顿更多）</p>
           <p className="text-yellow-500 flex items-center gap-1">
             <AlertCircle className="w-4 h-4" />
             首次使用需要安装浏览器: 在终端运行 <code className="bg-muted px-1 rounded">npx playwright install chromium</code>

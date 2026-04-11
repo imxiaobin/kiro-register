@@ -566,10 +566,19 @@ const api = {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
+    luckMailConfig?: {
+      apiKey: string
+      projectCode: string
+      emailType?: string
+      domain?: string
+      specifiedEmail?: string
+    }
   }): Promise<{
     success: boolean
     ssoToken?: string
     name?: string
+    email?: string
     error?: string
   }> => {
     return ipcRenderer.invoke('auto-register-aws', params)
@@ -580,6 +589,7 @@ const api = {
     email: string
     emailPassword: string
     headless?: boolean
+    humanizationLevel?: 'low' | 'medium' | 'high'
   }): Promise<{
     success: boolean
     error?: string
