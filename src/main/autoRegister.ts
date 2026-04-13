@@ -484,41 +484,31 @@ function inferRegionFromProxy(proxyUrl?: string): RegionCode {
 }
 
 function buildRandomUserAgent(): string {
-  const chromeVersion = `${randomBetween(124, 136)}.0.${randomBetween(6200, 7300)}.${randomBetween(50, 220)}`;
-
-  if (chance(24)) {
-    const macVersions = ["10_15_7", "11_7_10", "12_7_6", "13_6_9", "14_4_1"];
-    return `Mozilla/5.0 (Macintosh; Intel Mac OS X ${pickOne(macVersions)}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
-  }
-
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
+  return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 }
 
 function createSessionEnvironment(proxyUrl?: string): SessionEnvironment {
   const regionCode = inferRegionFromProxy(proxyUrl);
   const regionOption = REGION_OPTIONS[regionCode];
-  const baseViewport = pickOne(COMMON_VIEWPORTS);
+  const baseViewport = COMMON_VIEWPORTS[1];
   const viewport = {
-    width: clamp(baseViewport.width + randomBetween(-28, 28), 1180, 1980),
-    height: clamp(baseViewport.height + randomBetween(-20, 20), 700, 1180),
+    width: baseViewport.width,
+    height: baseViewport.height,
   };
 
   return {
     regionCode,
     viewport,
-    locale: pickOne(regionOption.locales),
-    timezoneId: pickOne(regionOption.timezones),
-    acceptLanguage: pickOne(regionOption.acceptLanguages),
+    locale: regionOption.locales[0] ?? "en-US",
+    timezoneId: regionOption.timezones[0] ?? "UTC",
+    acceptLanguage: regionOption.acceptLanguages[0] ?? "en-US,en;q=0.9",
     userAgent: buildRandomUserAgent(),
   };
 }
 
-function createHumanizationSession(
-  level: HumanizationLevel,
-  proxyUrl?: string,
-): HumanizationSession {
+function createHumanizationSession(proxyUrl?: string): HumanizationSession {
   return {
-    profile: createHumanizationProfile(level),
+    profile: DEFAULT_HUMANIZATION_PROFILE,
     environment: createSessionEnvironment(proxyUrl),
   };
 }
@@ -545,16 +535,10 @@ async function waitRandom(
   max: number,
   applyProfile: boolean = true,
 ): Promise<void> {
-  let actualMin = min;
-  let actualMax = max;
-
-  if (applyProfile) {
-    const { delayMultiplier } = getHumanizationProfile(page);
-    actualMin = Math.max(10, Math.round(min * delayMultiplier));
-    actualMax = Math.max(actualMin, Math.round(max * delayMultiplier));
-  }
-
-  await page.waitForTimeout(randomBetween(actualMin, actualMax));
+  const averageDelay = Math.floor((min + max) / 2);
+  const delay = Math.max(30, Math.min(150, averageDelay));
+  void applyProfile;
+  await page.waitForTimeout(delay);
 }
 
 function getViewportSize(page: Page): { width: number; height: number } {
@@ -611,219 +595,95 @@ function getRandomPointInBox(box: {
 }
 
 async function moveMouseLikeUser(page: Page, target: Point): Promise<void> {
-  const profile = getHumanizationProfile(page);
-  const start = getCurrentMousePosition(page);
-  const controlPoint = {
-    x: Math.round(
-      (start.x + target.x) / 2 +
-        randomBetween(-profile.mouseCurveJitterX, profile.mouseCurveJitterX),
-    ),
-    y: Math.round(
-      (start.y + target.y) / 2 +
-        randomBetween(-profile.mouseCurveJitterY, profile.mouseCurveJitterY),
-    ),
-  };
-
-  await page.mouse.move(controlPoint.x, controlPoint.y, {
-    steps: randomBetween(
-      profile.mouseFirstLegStepsMin,
-      profile.mouseFirstLegStepsMax,
-    ),
-  });
-  rememberMousePosition(page, controlPoint);
-  await waitRandom(page, 30, 90);
-
-  await page.mouse.move(target.x, target.y, {
-    steps: randomBetween(
-      profile.mouseSecondLegStepsMin,
-      profile.mouseSecondLegStepsMax,
-    ),
-  });
+  await page.mouse.move(target.x, target.y, { steps: 1 });
   rememberMousePosition(page, target);
-
-  if (chance(profile.mouseSettleChancePercent)) {
-    const settlePoint = {
-      x: target.x + randomBetween(-3, 3),
-      y: target.y + randomBetween(-2, 2),
-    };
-    await page.mouse.move(settlePoint.x, settlePoint.y, {
-      steps: randomBetween(2, 5),
-    });
-    rememberMousePosition(page, settlePoint);
-  }
 }
 
 async function nudgeScrollLikeUser(
   page: Page,
   element?: Locator,
 ): Promise<void> {
-  const profile = getHumanizationProfile(page);
-  if (!chance(profile.scrollNudgeChancePercent)) {
-    return;
-  }
-
-  let delta = 0;
-  const viewport = getViewportSize(page);
-
-  if (element) {
-    const box = await element.boundingBox().catch(() => null);
-    if (box) {
-      const marginTop = box.y;
-      const marginBottom = viewport.height - (box.y + box.height);
-
-      if (marginTop > 220 && marginBottom > 220) {
-        delta =
-          chance(50)
-            ? randomBetween(40, 120)
-            : -randomBetween(40, 120);
-      } else if (marginTop > 220) {
-        delta = randomBetween(40, 120);
-      } else if (marginBottom > 220) {
-        delta = -randomBetween(40, 120);
-      }
-    }
-  }
-
-  if (!delta) {
-    delta = chance(50) ? randomBetween(20, 70) : -randomBetween(20, 70);
-  }
-
-  delta = Math.round(delta * profile.scrollStrengthMultiplier);
-
-  await page.mouse.wheel(0, delta);
-  await waitRandom(page, 120, 260);
-
-  if (Math.abs(delta) > 45 && chance(70)) {
-    const correction =
-      delta > 0 ? -randomBetween(15, 45) : randomBetween(15, 45);
-    await page.mouse.wheel(0, correction);
-    await waitRandom(page, 80, 180);
-  }
+  void page;
+  void element;
+  return;
 }
 
 async function focusElementLikeUser(
   page: Page,
   element: Locator,
 ): Promise<void> {
+  void page;
   await element.scrollIntoViewIfNeeded().catch(() => {});
-  await waitRandom(page, 150, 320);
-  await nudgeScrollLikeUser(page, element);
+  await element.click({ delay: 0 }).catch(() => {});
+  await element.focus().catch(() => {});
+}
 
-  const box = await element.boundingBox();
-  if (box) {
-    await moveMouseLikeUser(page, getRandomPointInBox(box));
-    await waitRandom(page, 80, 200);
-    await page.mouse.down();
-    await waitRandom(page, 45, 110);
-    await page.mouse.up();
-    await waitRandom(page, 80, 180);
+type InputSimulationMode =
+  | "default"
+  | "human-name"
+  | "human-name-rich"
+  | "human-code";
+
+async function typeTextLikeUser(
+  page: Page,
+  value: string,
+  mode: InputSimulationMode = "default",
+): Promise<void> {
+  if (mode === "default") {
+    await page.keyboard.type(value, { delay: 0 });
     return;
   }
 
-  await element.click({ delay: randomBetween(50, 120) });
-  await waitRandom(page, 80, 180);
-}
+  if (mode === "human-name-rich") {
+    const chars = [...value];
+    await page.waitForTimeout(randomBetween(180, 360));
 
-async function typeTextLikeUser(page: Page, value: string): Promise<void> {
-  const profile = getHumanizationProfile(page);
+    for (let i = 0; i < chars.length; i++) {
+      const char = chars[i];
+      await page.keyboard.type(char, { delay: randomBetween(72, 132) });
 
-  const getTypoChar = (expected: string): string | null => {
-    let pool = "";
-    if (/[A-Z]/.test(expected)) {
-      pool = UPPERCASE_CHARS;
-    } else if (/[a-z]/.test(expected)) {
-      pool = LOWERCASE_CHARS;
-    } else if (/[0-9]/.test(expected)) {
-      pool = DIGIT_CHARS;
-    } else if (PASSWORD_OPTIONAL_CHARS.includes(expected)) {
-      pool = PASSWORD_OPTIONAL_CHARS;
-    }
-
-    if (!pool) {
-      return null;
-    }
-
-    for (let i = 0; i < 6; i++) {
-      const typo = pickRandomChar(pool);
-      if (typo !== expected) {
-        return typo;
+      if (i === 0) {
+        await page.waitForTimeout(randomBetween(90, 180));
       }
-    }
-    return null;
-  };
-
-  for (let i = 0; i < value.length; i++) {
-    const currentChar = value[i];
-    const allowTypo = !/[\s@._-]/.test(currentChar);
-    if (allowTypo && chance(profile.typoChancePercent)) {
-      const typoChar = getTypoChar(currentChar);
-      if (typoChar) {
-        await page.keyboard.type(typoChar, {
-          delay: randomBetween(profile.typingDelayMin, profile.typingDelayMax),
-        });
-        await waitRandom(
-          page,
-          profile.typoFixDelayMin,
-          profile.typoFixDelayMax,
-          false,
-        );
-        await page.keyboard.press("Backspace");
-        await waitRandom(page, 60, 140);
+      if (char === " ") {
+        await page.waitForTimeout(randomBetween(220, 420));
       }
     }
 
-    await page.keyboard.type(currentChar, {
-      delay: randomBetween(profile.typingDelayMin, profile.typingDelayMax),
-    });
+    if (chars.length > 4) {
+      const lastChar = chars[chars.length - 1];
+      await page.waitForTimeout(randomBetween(120, 220));
+      await page.keyboard.press("Backspace").catch(() => {});
+      await page.waitForTimeout(randomBetween(90, 180));
+      await page.keyboard.type(lastChar, { delay: randomBetween(86, 126) });
+    }
+    return;
+  }
 
-    if (
-      (i + 1) % randomBetween(profile.pauseEveryMin, profile.pauseEveryMax) ===
-        0 &&
-      i < value.length - 1
-    ) {
-      await waitRandom(
-        page,
-        profile.pauseDelayMin,
-        profile.pauseDelayMax,
-        false,
-      );
+  const chars = [...value];
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    const baseDelay = mode === "human-code" ? 95 : 70;
+    await page.keyboard.type(char, { delay: baseDelay });
+
+    if (mode === "human-name" && char === " ") {
+      await page.waitForTimeout(180);
+    }
+
+    if (mode === "human-code" && i === 2 && chars.length >= 6) {
+      await page.waitForTimeout(260);
     }
   }
 }
 
 async function performIncidentalAction(page: Page): Promise<void> {
-  const profile = getHumanizationProfile(page);
-  if (!chance(profile.incidentalActionChancePercent)) {
-    return;
-  }
-
-  if (chance(58)) {
-    await moveMouseLikeUser(page, getRandomPointInViewport(page));
-    await waitRandom(page, 60, 180);
-  }
-
-  if (chance(42)) {
-    await nudgeScrollLikeUser(page);
-    await waitRandom(page, 80, 200);
-  }
+  void page;
+  return;
 }
 
 async function settleAfterInput(page: Page, element: Locator): Promise<void> {
-  await waitRandom(page, 180, 360);
-  await nudgeScrollLikeUser(page, element);
-
-  await performIncidentalAction(page);
-
-  const profile = getHumanizationProfile(page);
-
-  if (chance(profile.tabNavigationChancePercent)) {
-    await page.keyboard.press("Tab").catch(async () => {
-      await element.blur().catch(() => {});
-    });
-  } else {
-    await element.blur().catch(() => {});
-  }
-  await waitRandom(page, 80, 180);
+  void page;
+  await element.blur().catch(() => {});
 }
 
 async function estimatePageComplexity(page: Page): Promise<"light" | "medium" | "heavy"> {
@@ -849,48 +709,311 @@ async function pauseForReading(
   page: Page,
   hint: "navigation" | "transition" | "verification" | "form" = "transition",
 ): Promise<void> {
-  const profile = getHumanizationProfile(page);
-  const complexity = await estimatePageComplexity(page);
-
-  let min = 450;
-  let max = 1100;
-
-  if (complexity === "medium") {
-    min = 850;
-    max = 1900;
-  } else if (complexity === "heavy") {
-    min = 1400;
-    max = 3100;
-  }
-
-  if (hint === "verification") {
-    min = Math.round(min * 1.24);
-    max = Math.round(max * 1.32);
-  } else if (hint === "form") {
-    min = Math.round(min * 1.12);
-    max = Math.round(max * 1.18);
-  } else if (hint === "navigation") {
-    min = Math.round(min * 0.85);
-    max = Math.round(max * 0.92);
-  }
-
-  const pace = profile.delayMultiplier * profile.readingPauseMultiplier;
-  await waitRandom(page, Math.round(min * pace), Math.round(max * pace), false);
+  void page;
+  void hint;
+  return;
 }
 
 async function warmUpPageInteraction(page: Page): Promise<void> {
-  const profile = getHumanizationProfile(page);
-  if (!chance(profile.warmUpChancePercent)) {
-    return;
+  void page;
+  return;
+}
+
+const DEVICE_CONFIRM_BUTTON_SELECTORS = [
+  "#cli_verification_btn",
+  'button[data-analytics="accept-user-code"]',
+  'button:has-text("Confirm and continue")',
+  'button:has-text("确认并继续")',
+];
+
+const DEVICE_FOLLOWUP_BUTTON_SELECTORS = [
+  'button[data-testid="allow-access-button"]',
+  'button[data-analytics="consent-allow-access"]',
+  'button:has-text("Allow access")',
+  'button:has-text("Allow")',
+  'button:has-text("Authorize")',
+  'button:has-text("Grant access")',
+  'button:has-text("Continue")',
+  'button:has-text("允许访问")',
+  'button:has-text("允许")',
+  'button:has-text("授权")',
+  'button:has-text("继续")',
+  'button.awsui_variant-primary',
+];
+
+function isDeviceAuthorizationCompletedByText(bodyText: string): boolean {
+  return /authorized|authorization completed|success|you can close|已授权|授权成功|成功/i.test(
+    bodyText,
+  );
+}
+
+function isDeviceAuthorizationCompletedByUrl(url: string): boolean {
+  if (!url) {
+    return false;
   }
 
-  await waitRandom(page, 400, 900);
-  await moveMouseLikeUser(page, getRandomPointInViewport(page));
-  await waitRandom(page, 120, 240);
-  await nudgeScrollLikeUser(page);
-  await waitRandom(page, 200, 400);
-  await pauseForReading(page, "navigation");
+  return (
+    /https:\/\/app\.kiro\.dev\/account\/usage(?:[/?#]|$)/i.test(url) ||
+    /https:\/\/app\.kiro\.dev\/account(?:[/?#]|$)/i.test(url)
+  );
 }
+
+async function tryAutoClickDeviceButton(
+  page: Page,
+  selectors: string[],
+  log: LogCallback,
+  description: string,
+): Promise<boolean> {
+  for (const selector of selectors) {
+    try {
+      const element = page.locator(selector).first();
+      const isVisible = await element.isVisible();
+      if (!isVisible) {
+        continue;
+      }
+
+      const isReady = await waitForElementEnabled(element, 2000);
+      if (!isReady) {
+        continue;
+      }
+
+      await clickLikeUser(page, element, log, description);
+      return true;
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
+}
+
+async function autoClickDeviceConfirmButton(
+  page: Page,
+  log: LogCallback,
+): Promise<void> {
+  log("设备授权页面已打开，5 秒后尝试自动点击 Confirm and continue...");
+  await page.waitForTimeout(5000);
+
+  const clicked = await waitAndClickWithFallback(
+    page,
+    DEVICE_CONFIRM_BUTTON_SELECTORS,
+    log,
+    "设备授权确认按钮",
+    20000,
+    2,
+  );
+
+  if (clicked) {
+    log("✓ 已自动点击 Confirm and continue");
+    log("已点击授权按钮，等待 6 秒后继续后续流程...");
+    await page.waitForTimeout(6000);
+  } else {
+    log("⚠ 未自动点击到 Confirm and continue，请手动点击");
+  }
+}
+
+async function waitForManualDeviceAuthorization(
+  page: Page,
+  log: LogCallback,
+  timeout: number = 300000,
+): Promise<boolean> {
+  const startTime = Date.now();
+  let lastAutoClickAt = 0;
+  let lastKnownUrl = "";
+  log(`请在当前浏览器手动完成设备授权，最长等待 ${Math.floor(timeout / 1000)} 秒...`);
+
+  while (Date.now() - startTime < timeout) {
+    const currentUrl = page.url();
+
+    if (currentUrl && currentUrl !== lastKnownUrl) {
+      lastKnownUrl = currentUrl;
+      log(`[设备授权] 当前页面: ${currentUrl}`);
+    }
+
+    if (isDeviceAuthorizationCompletedByUrl(currentUrl)) {
+      log(`✓ 检测到设备授权流程已完成跳转: ${currentUrl}`);
+      return true;
+    }
+
+    try {
+      const bodyText = await page.locator("body").innerText({ timeout: 1500 });
+      if (isDeviceAuthorizationCompletedByText(bodyText)) {
+        log("✓ 检测到设备授权成功页面");
+        return true;
+      }
+    } catch {
+      void 0;
+    }
+
+    const now = Date.now();
+    if (now - lastAutoClickAt >= 5000) {
+      const confirmClicked = await tryAutoClickDeviceButton(
+        page,
+        DEVICE_CONFIRM_BUTTON_SELECTORS,
+        log,
+        "设备授权确认按钮",
+      );
+      if (confirmClicked) {
+        lastAutoClickAt = now;
+        log("已自动点击设备确认按钮，等待 6 秒后继续检测...");
+        await page.waitForTimeout(6000);
+        continue;
+      }
+
+      const autoClicked = await tryAutoClickDeviceButton(
+        page,
+        DEVICE_FOLLOWUP_BUTTON_SELECTORS,
+        log,
+        "设备授权后续按钮",
+      );
+      if (autoClicked) {
+        lastAutoClickAt = now;
+        log("已自动点击后续授权按钮，等待 6 秒后继续检测...");
+        await page.waitForTimeout(6000);
+        continue;
+      }
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  log("⚠ 等待手动设备授权超时，按当前状态继续");
+  return false;
+}
+
+async function waitForKiroUsagePage(
+  page: Page,
+  log: LogCallback,
+  timeout: number = 120000,
+): Promise<void> {
+  const startTime = Date.now();
+  log("等待页面跳转到 https://app.kiro.dev/account/usage ...");
+
+  while (Date.now() - startTime < timeout) {
+    const currentUrl = page.url();
+
+    if (
+      currentUrl === "https://app.kiro.dev/signin" ||
+      currentUrl.startsWith("https://app.kiro.dev/signin?") ||
+      currentUrl.startsWith("https://app.kiro.dev/signin#") ||
+      currentUrl.startsWith("https://app.kiro.dev/signin/")
+    ) {
+      log(`✗ 检测到跳转登录页: ${currentUrl}`);
+      throw new Error("检测到跳转到 https://app.kiro.dev/signin，账号可能已被封禁");
+    }
+
+    if (
+      currentUrl === "https://app.kiro.dev/account/usage" ||
+      currentUrl.startsWith("https://app.kiro.dev/account/usage?") ||
+      currentUrl.startsWith("https://app.kiro.dev/account/usage#") ||
+      currentUrl.startsWith("https://app.kiro.dev/account/usage/")
+    ) {
+      log(`✓ 已跳转到使用页: ${currentUrl}`);
+      return;
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error("等待跳转到 https://app.kiro.dev/account/usage 超时");
+}
+
+async function fetchAutoDeviceAuthorizationUrl(
+  log: LogCallback,
+  region: string = "us-east-1",
+): Promise<string | null> {
+  const oidcBase = `https://oidc.${region}.amazonaws.com`;
+  const startUrl = "https://view.awsapps.com/start";
+  const scopes = [
+    "codewhisperer:completions",
+    "codewhisperer:analysis",
+    "codewhisperer:conversations",
+    "codewhisperer:transformations",
+    "codewhisperer:taskassist",
+  ];
+
+  try {
+    log("[设备链接] 正在自动获取设备码链接...");
+    const regRes = await fetch(`${oidcBase}/client/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientName: "Kiro Account Manager",
+        clientType: "public",
+        scopes,
+        grantTypes: ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
+        issuerUrl: startUrl,
+      }),
+    });
+
+    if (!regRes.ok) {
+      const errText = await regRes.text();
+      log(`[设备链接] 注册客户端失败: ${errText.substring(0, 200)}`);
+      return null;
+    }
+
+    const regData = (await regRes.json()) as {
+      clientId: string;
+      clientSecret: string;
+    };
+
+    const authRes = await fetch(`${oidcBase}/device_authorization`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientId: regData.clientId,
+        clientSecret: regData.clientSecret,
+        startUrl,
+      }),
+    });
+
+    if (!authRes.ok) {
+      const errText = await authRes.text();
+      log(`[设备链接] 获取设备码失败: ${errText.substring(0, 200)}`);
+      return null;
+    }
+
+    const authData = (await authRes.json()) as {
+      userCode?: string;
+      verificationUri?: string;
+      verificationUriComplete?: string;
+    };
+
+    const deviceUrl =
+      authData.verificationUriComplete ||
+      authData.verificationUri ||
+      (authData.userCode
+        ? `https://view.awsapps.com/start/#/device?user_code=${authData.userCode}`
+        : "");
+
+    if (!deviceUrl) {
+      log("[设备链接] 未返回可用设备链接");
+      return null;
+    }
+
+    log(`[设备链接] ✓ 自动获取成功: ${deviceUrl}`);
+    return deviceUrl;
+  } catch (error) {
+    log(`[设备链接] 自动获取失败: ${error}`);
+    return null;
+  }
+}
+
+const LEGACY_HUMANIZATION_SYMBOLS = [
+  pickOne,
+  chance,
+  getHumanizationLabel,
+  createHumanizationProfile,
+  getHumanizationProfile,
+  getCurrentMousePosition,
+  getRandomPointInViewport,
+  getRandomPointInBox,
+  moveMouseLikeUser,
+  nudgeScrollLikeUser,
+  performIncidentalAction,
+  estimatePageComplexity,
+];
+void LEGACY_HUMANIZATION_SYMBOLS;
 
 // HTML 转文本 - 改进版本
 function htmlToText(html: string): string {
@@ -1336,6 +1459,7 @@ async function clearAndTypeIntoElement(
   page: Page,
   element: Locator,
   value: string,
+  mode: InputSimulationMode = "default",
 ): Promise<void> {
   const selectAllShortcut =
     process.platform === "darwin" ? "Meta+A" : "Control+A";
@@ -1343,7 +1467,7 @@ async function clearAndTypeIntoElement(
   await waitRandom(page, 50, 120);
   await page.keyboard.press("Backspace").catch(() => {});
   await waitRandom(page, 80, 180);
-  await typeTextLikeUser(page, value);
+  await typeTextLikeUser(page, value, mode);
 
   const currentValue = await element.inputValue().catch(() => "");
   if (currentValue !== value) {
@@ -1358,6 +1482,7 @@ async function waitAndFill(
   log: LogCallback,
   description: string,
   timeout: number = 30000,
+  mode: InputSimulationMode = "default",
 ): Promise<boolean> {
   log(`等待${description}出现...`);
   try {
@@ -1365,8 +1490,29 @@ async function waitAndFill(
     await element.waitFor({ state: "visible", timeout });
     await waitForElementEnabled(element, Math.min(timeout, 10000));
     await pauseForReading(page, "form");
+
+    if (mode === "human-name-rich") {
+      log("~ 姓名页执行拟人化准备动作");
+      await moveMouseLikeUser(page, getRandomPointInViewport(page));
+      await page.waitForTimeout(randomBetween(180, 360));
+      const box = await element.boundingBox().catch(() => null);
+      if (box) {
+        await moveMouseLikeUser(page, getRandomPointInBox(box));
+        await page.waitForTimeout(randomBetween(120, 260));
+      }
+    }
+
     await focusElementLikeUser(page, element);
-    await clearAndTypeIntoElement(page, element, value);
+    if (mode !== "default") {
+      log(`~ ${description}启用模拟人工输入`);
+      await page.waitForTimeout(220);
+    }
+    await clearAndTypeIntoElement(page, element, value, mode);
+
+    if (mode === "human-name-rich") {
+      log("~ 姓名页模拟人工复核停顿");
+      await page.waitForTimeout(randomBetween(360, 880));
+    }
 
     await settleAfterInput(page, element);
     log(`✓ 已输入${description}: ${value}`);
@@ -1431,60 +1577,29 @@ async function clickLikeUser(
   log: LogCallback,
   description: string,
 ): Promise<void> {
-  const profile = getHumanizationProfile(page);
+  void page;
   await element.scrollIntoViewIfNeeded().catch(() => {});
-  await waitRandom(page, 180, 360);
-  await nudgeScrollLikeUser(page, element);
+  await element.click({ delay: 0 });
+  log(`✓ 已点击${description}`);
+}
 
-  const box = await element.boundingBox();
-  if (box && chance(profile.preHoverChancePercent)) {
-    const hoverPoint = {
-      x: clamp(
-        Math.round(box.x + box.width * randomFloat(0.2, 0.8) + randomBetween(-6, 6)),
-        Math.round(box.x),
-        Math.round(box.x + box.width),
-      ),
-      y: clamp(
-        Math.round(box.y + box.height * randomFloat(0.25, 0.75) + randomBetween(-4, 4)),
-        Math.round(box.y),
-        Math.round(box.y + box.height),
-      ),
-    };
-    await moveMouseLikeUser(page, hoverPoint);
-    await waitRandom(page, 90, 220);
-  }
-
-  if (chance(profile.keyboardActionChancePercent)) {
-    await element.focus().catch(() => {});
-    await waitRandom(page, 80, 180);
-    const key = chance(74) ? "Enter" : "Space";
-    try {
-      await page.keyboard.press(key);
-      await waitRandom(page, 120, 260);
-      log(`✓ 已用键盘(${key})触发${description}`);
-      await performIncidentalAction(page);
-      return;
-    } catch {
-      // 键盘触发失败时回退到鼠标点击
-    }
-  }
-
-  if (box) {
-    await moveMouseLikeUser(page, getRandomPointInBox(box));
-    await waitRandom(page, 90, 220);
-    await page.mouse.down();
-    await waitRandom(page, 55, 140);
-    await page.mouse.up();
-    await waitRandom(page, 120, 260);
-    log(`✓ 已用鼠标点击${description}`);
-    await performIncidentalAction(page);
+async function hoverElementLikeUser(
+  page: Page,
+  element: Locator,
+  log: LogCallback,
+  description: string,
+): Promise<void> {
+  await element.scrollIntoViewIfNeeded().catch(() => {});
+  const box = await element.boundingBox().catch(() => null);
+  if (!box) {
     return;
   }
 
-  await element.click({ delay: randomBetween(60, 140) });
-  await waitRandom(page, 120, 260);
-  log(`✓ 已点击${description}`);
-  await performIncidentalAction(page);
+  await moveMouseLikeUser(page, getRandomPointInViewport(page));
+  await page.waitForTimeout(randomBetween(90, 220));
+  await moveMouseLikeUser(page, getRandomPointInBox(box));
+  await page.waitForTimeout(randomBetween(180, 420));
+  log(`~ 已模拟鼠标悬停${description}`);
 }
 
 async function waitForAnyVisibleSelector(
@@ -1627,6 +1742,7 @@ async function checkAndRetryOnError(
   description: string,
   maxRetries: number = 3,
   retryDelay: number = 2000,
+  simulateHover: boolean = false,
 ): Promise<boolean> {
   // 错误弹窗的多种可能选择器
   const errorSelectors = [
@@ -1685,6 +1801,9 @@ async function checkAndRetryOnError(
         const button = page.locator(buttonSelector).first();
         await button.waitFor({ state: "visible", timeout: 5000 });
         await waitForElementEnabled(button, 5000);
+        if (simulateHover) {
+          await hoverElementLikeUser(page, button, log, description);
+        }
         await clickLikeUser(page, button, log, description);
         await pauseForReading(page, "transition");
       } catch (e) {
@@ -1707,12 +1826,16 @@ async function waitAndClickWithRetry(
   description: string,
   timeout: number = 30000,
   maxRetries: number = 3,
+  simulateHover: boolean = false,
 ): Promise<boolean> {
   log(`等待${description}出现...`);
   try {
     const element = page.locator(selector).first();
     await element.waitFor({ state: "visible", timeout });
     await waitForElementEnabled(element, Math.min(timeout, 10000));
+    if (simulateHover) {
+      await hoverElementLikeUser(page, element, log, description);
+    }
     await clickLikeUser(page, element, log, description);
     await pauseForReading(page, "transition");
 
@@ -1723,12 +1846,61 @@ async function waitAndClickWithRetry(
       log,
       description,
       maxRetries,
+      2000,
+      simulateHover,
     );
     return success;
   } catch (error) {
     log(`✗ 点击${description}失败: ${error}`);
     return false;
   }
+}
+
+async function enterBuilderIdFromKiroSignin(
+  page: Page,
+  log: LogCallback,
+): Promise<void> {
+  const signinUrl = "https://app.kiro.dev/signin";
+  log(`访问登录入口: ${signinUrl}`);
+  await page.goto(signinUrl, { waitUntil: "networkidle", timeout: 60000 });
+
+  const builderButtonSelectors = [
+    'button:has-text("Builder ID")',
+    'button:has-text("BuilderID")',
+    'button[data-variant="secondary"]:has-text("Builder ID")',
+    'button[data-block="true"]:has-text("Builder ID")',
+  ];
+
+  if (
+    !(await waitAndClickWithFallback(
+      page,
+      builderButtonSelectors,
+      log,
+      "Builder ID 登录按钮",
+      30000,
+      2,
+    ))
+  ) {
+    throw new Error("未找到 Builder ID 登录按钮");
+  }
+
+  const nextPageReady = await waitForAnyVisibleSelector(
+    page,
+    [
+      'input[placeholder="username@example.com"]',
+      'input[type="email"]',
+      'span[class*="awsui_heading-text"]:has-text("Sign in with your AWS Builder ID")',
+      'span[class*="awsui_heading-text"]:has-text("Verify")',
+      'input[placeholder="6-digit"]',
+    ],
+    30000,
+  );
+
+  if (!nextPageReady) {
+    throw new Error("点击 Builder ID 后未进入注册/登录页面");
+  }
+
+  log("✓ 已进入 Builder ID 注册/登录页面");
 }
 
 /**
@@ -1740,17 +1912,13 @@ export async function activateOutlook(
   emailPassword: string,
   log: LogCallback,
   headless: boolean = false,
-  humanizationLevel: HumanizationLevel = "medium",
 ): Promise<{ success: boolean; error?: string }> {
   const activationUrl = "https://go.microsoft.com/fwlink/p/?linkid=2125442";
   let browser: Browser | null = null;
-  const humanizationSession = createHumanizationSession(humanizationLevel);
+  const humanizationSession = createHumanizationSession();
 
   log("========== 开始激活 Outlook 邮箱 ==========");
   log(`邮箱: ${email}`);
-  log(
-    `拟人化强度: ${getHumanizationLabel(humanizationLevel)} (节奏: ${humanizationSession.profile.tempo})`,
-  );
 
   try {
     // 启动浏览器
@@ -2034,7 +2202,6 @@ export async function activateOutlook(
  * @param proxyUrl 代理地址（仅用于 AWS 注册，不用于 Outlook 激活和获取验证码）
  * @param manualVerification 是否手动输入验证码
  * @param headless 是否无头模式（手动验证码模式下会强制关闭）
- * @param humanizationLevel 拟人化强度（低/中/高）
  */
 export async function autoRegisterAWS(
   email: string,
@@ -2046,7 +2213,7 @@ export async function autoRegisterAWS(
   proxyUrl?: string,
   manualVerification: boolean = false,
   headless: boolean = false,
-  humanizationLevel: HumanizationLevel = "medium",
+  autoFetchDeviceLink: boolean = false,
   luckMailConfig?: {
     apiKey: string;
     projectCode: string;
@@ -2064,14 +2231,14 @@ export async function autoRegisterAWS(
   const password = generateRandomPassword(12);
   const randomName = generateRandomName();
   let browser: Browser | null = null;
-  const useHeadless = manualVerification ? false : headless;
-  const humanizationSession = createHumanizationSession(
-    humanizationLevel,
-    proxyUrl,
-  );
+  const useHeadless = manualVerification || autoFetchDeviceLink ? false : headless;
+  const humanizationSession = createHumanizationSession(proxyUrl);
 
   if (manualVerification && headless) {
     log("⚠ 手动验证码模式不支持无头，已自动切换为有头模式");
+  }
+  if (autoFetchDeviceLink && headless) {
+    log("⚠ 登录后设备授权模式需要可见浏览器，已自动关闭无头模式");
   }
 
   // LuckMail Mode A：创建订单，由平台分配邮箱
@@ -2110,7 +2277,6 @@ export async function autoRegisterAWS(
       emailPassword,
       log,
       useHeadless,
-      humanizationLevel,
     );
     if (!activationResult.success) {
       log(`⚠ Outlook 激活可能未完成: ${activationResult.error}`);
@@ -2130,9 +2296,6 @@ export async function autoRegisterAWS(
     log(`代理: ${proxyUrl}`);
   }
   log(`浏览器模式: ${useHeadless ? "无头" : "有头"}`);
-  log(
-    `拟人化强度: ${getHumanizationLabel(humanizationLevel)} (节奏: ${humanizationSession.profile.tempo})`,
-  );
 
   try {
     // 步骤1: 创建浏览器，进入注册页面（使用代理）
@@ -2156,9 +2319,21 @@ export async function autoRegisterAWS(
     const page = await context.newPage();
     bindHumanizationProfile(page, humanizationSession.profile);
 
-    const registerUrl =
-      "https://view.awsapps.com/start/#/device?user_code=PQCF-FCCN";
-    await page.goto(registerUrl, { waitUntil: "networkidle", timeout: 60000 });
+    try {
+      await enterBuilderIdFromKiroSignin(page, log);
+    } catch (signinError) {
+      const errorMessage =
+        signinError instanceof Error ? signinError.message : String(signinError);
+      log(`⚠ 新入口失败，回退旧入口: ${errorMessage}`);
+      const legacyRegisterUrl =
+        "https://view.awsapps.com/start/#/device?user_code=PQCF-FCCN";
+      await page.goto(legacyRegisterUrl, {
+        waitUntil: "networkidle",
+        timeout: 60000,
+      });
+      log("✓ 已通过旧入口进入页面");
+    }
+
     log("✓ 页面加载完成");
     log(
       `会话环境: ${humanizationSession.environment.viewport.width}x${humanizationSession.environment.viewport.height}, ${humanizationSession.environment.locale}, ${humanizationSession.environment.timezoneId}, region=${humanizationSession.environment.regionCode}`,
@@ -2187,6 +2362,9 @@ export async function autoRegisterAWS(
         firstContinueSelector,
         log,
         "第一个继续按钮",
+        30000,
+        3,
+        true,
       ))
     ) {
       throw new Error("点击第一个继续按钮失败");
@@ -2437,6 +2615,8 @@ export async function autoRegisterAWS(
             loginVerificationCode,
             log,
             "登录验证码",
+            30000,
+            "human-code",
           ))
         ) {
           throw new Error("输入登录验证码失败");
@@ -2464,7 +2644,7 @@ export async function autoRegisterAWS(
         }
       }
 
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(8000);
     } else {
       // ========== 注册流程（新账号）==========
       // 步骤2: 等待姓名输入框出现，输入姓名
@@ -2477,6 +2657,7 @@ export async function autoRegisterAWS(
           log,
           "姓名输入框",
           120000,
+          "human-name-rich",
         ))
       ) {
         throw new Error("未找到姓名输入框");
@@ -2493,6 +2674,9 @@ export async function autoRegisterAWS(
           secondContinueSelector,
           log,
           "第二个继续按钮",
+          30000,
+          3,
+          true,
         ))
       ) {
         throw new Error("点击第二个继续按钮失败");
@@ -2571,6 +2755,8 @@ export async function autoRegisterAWS(
             verificationCode,
             log,
             "验证码",
+            30000,
+            "human-code",
           ))
         ) {
           throw new Error("输入验证码失败");
@@ -2650,35 +2836,61 @@ export async function autoRegisterAWS(
         throw new Error("点击第三个继续按钮失败");
       }
 
-      await page.waitForTimeout(5000);
+      await waitForKiroUsagePage(page, log, 120000);
     }
 
-    // 步骤5: 获取 SSO Token（登录和注册流程共用）
-    log("\n步骤5: 获取 SSO Token...");
     let ssoToken: string | null = null;
-    const ssoTokenWaitSeconds = 120;
 
-    for (let i = 0; i < ssoTokenWaitSeconds; i++) {
+    if (autoFetchDeviceLink) {
+      log("\n步骤5: 自动设备授权模式（跳过 SSO Token 轮询）...");
+      const autoDeviceUrl = await fetchAutoDeviceAuthorizationUrl(log);
+      if (!autoDeviceUrl) {
+        throw new Error("自动获取设备授权链接失败");
+      }
+
+      log(`登录成功后继续打开设备链接: ${autoDeviceUrl}`);
+      await page.goto(autoDeviceUrl, {
+        waitUntil: "networkidle",
+        timeout: 60000,
+      });
+      await autoClickDeviceConfirmButton(page, log);
+      await waitForManualDeviceAuthorization(page, log, 300000);
+
+      // 自动设备授权模式下，SSO Token 只做可选采集，不作为成功前置条件
       const cookies = await context.cookies();
       const ssoCookie = cookies.find((c) => c.name === "x-amz-sso_authn");
       if (ssoCookie) {
         ssoToken = ssoCookie.value;
-        log(`✓ 成功获取 SSO Token (x-amz-sso_authn)!`);
-        break;
+        log("✓ 检测到 SSO Token (x-amz-sso_authn)");
+      } else {
+        log("ℹ 未检测到 SSO Token，将按无 Token 成功返回");
       }
-      log(`等待 SSO Token... (${i + 1}/${ssoTokenWaitSeconds})`);
-      await page.waitForTimeout(1000);
+    } else {
+      // 步骤5: 获取 SSO Token（登录和注册流程共用）
+      log("\n步骤5: 获取 SSO Token...");
+      const ssoTokenWaitSeconds = 120;
+
+      for (let i = 0; i < ssoTokenWaitSeconds; i++) {
+        const cookies = await context.cookies();
+        const ssoCookie = cookies.find((c) => c.name === "x-amz-sso_authn");
+        if (ssoCookie) {
+          ssoToken = ssoCookie.value;
+          log("✓ 成功获取 SSO Token (x-amz-sso_authn)!");
+          break;
+        }
+        log(`等待 SSO Token... (${i + 1}/${ssoTokenWaitSeconds})`);
+        await page.waitForTimeout(1000);
+      }
+
+      if (!ssoToken) {
+        throw new Error("未能获取 SSO Token，可能操作未完成");
+      }
     }
 
     await browser.close();
     browser = null;
-
-    if (ssoToken) {
-      log("\n========== 操作成功! ==========");
-      return { success: true, ssoToken, name: randomName, email: resolvedEmail };
-    } else {
-      throw new Error("未能获取 SSO Token，可能操作未完成");
-    }
+    log("\n========== 操作成功! ==========");
+    return { success: true, ssoToken: ssoToken ?? undefined, name: randomName, email: resolvedEmail };
   } catch (error) {
     log(`\n✗ 注册失败: ${error}`);
     if (browser) {

@@ -3964,7 +3964,7 @@ app.whenReady().then(() => {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
+    autoFetchDeviceLink?: boolean
     luckMailConfig?: {
       apiKey: string
       projectCode: string
@@ -3998,7 +3998,7 @@ app.whenReady().then(() => {
         params.proxyUrl,
         params.manualVerification || false,
         params.headless || false,
-        params.humanizationLevel || 'medium',
+        params.autoFetchDeviceLink || false,
         params.luckMailConfig
       )
       
@@ -4014,7 +4014,6 @@ app.whenReady().then(() => {
     email: string
     emailPassword: string
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
   }) => {
     console.log('[ActivateOutlook] Starting activation for:', params.email)
     
@@ -4032,8 +4031,7 @@ app.whenReady().then(() => {
         params.email,
         params.emailPassword,
         sendLog,
-        params.headless || false,
-        params.humanizationLevel || 'medium'
+        params.headless || false
       )
       
       return result

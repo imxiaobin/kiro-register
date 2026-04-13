@@ -516,7 +516,7 @@ interface KiroApi {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
+    autoFetchDeviceLink?: boolean
     luckMailConfig?: {
       apiKey: string
       projectCode: string
@@ -537,7 +537,6 @@ interface KiroApi {
     email: string
     emailPassword: string
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
   }) => Promise<{
     success: boolean
     error?: string

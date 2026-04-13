@@ -566,7 +566,7 @@ const api = {
     proxyUrl?: string
     manualVerification?: boolean
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
+    autoFetchDeviceLink?: boolean
     luckMailConfig?: {
       apiKey: string
       projectCode: string
@@ -589,7 +589,6 @@ const api = {
     email: string
     emailPassword: string
     headless?: boolean
-    humanizationLevel?: 'low' | 'medium' | 'high'
   }): Promise<{
     success: boolean
     error?: string
